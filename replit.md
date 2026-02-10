@@ -4,6 +4,17 @@
 Multi-level commercial performance dashboard for a network of six schools. Consolidates CRM, financial, and academic data to present commercial and financial KPIs segmented by seller, school, and network with role-based access control.
 
 ## Recent Changes
+- **2026-02-10**: Auth Frontend Pages & Session Auth
+  - Session-based auth with express-session (httpOnly cookies, secure in production)
+  - Auth endpoints: POST /api/auth/login (email-only dev mode), POST /api/auth/logout, GET /api/auth/me, GET /api/auth/dev-users
+  - Login page with 3 tabs: E-mail (email-only, password deferred to Supabase), Magic Link (placeholder), Dev picker
+  - Signup page (/signup) and Reset Password page (/reset-password) — UI-only placeholders
+  - Dashboard page (/) with KPI cards (Matrículas, Receita, Escolas, Conversão)
+  - Admin Users page (/admin/users) with user table, role/school assignment, add user dialog, optimistic updates
+  - useAuth hook (signIn/signOut) and ProtectedRoute component with role-based guards
+  - AppLayout with collapsible shadcn Sidebar, dark mode toggle (localStorage + .dark class), user profile in footer
+  - All UI in Portuguese (Brazil); data-testid attributes on all interactive/display elements
+  - loadCurrentUser reads session first, falls back to x-user-id header for RBAC middleware compatibility
 - **2026-02-10**: Created Auth Sync Trigger and Webhook
   - Created `auth_user_sync_logs` audit trail table (Drizzle schema + SQL migration 003)
   - Implemented `sync_auth_user()` PostgreSQL trigger function for direct DB trigger on auth.users
@@ -65,8 +76,19 @@ Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
 - `GET/POST /api/schools`, `GET/PATCH/DELETE /api/schools/:id`
 - `GET /api/user-schools/user/:userId`, `GET /api/user-schools/school/:schoolId`
 - `POST /api/user-schools`, `DELETE /api/user-schools/:id`
+- `POST /api/auth/login` — Session login (email-only in dev mode)
+- `POST /api/auth/logout` — Session logout
+- `GET /api/auth/me` — Current session user
+- `GET /api/auth/dev-users` — Dev-mode user list (id, email, fullName, role)
 - `POST /api/auth/sync` — Supabase Auth webhook receiver (service role auth, not session auth)
 - `GET /api/auth/sync-logs/:userId` — Admin-only audit trail viewer
+
+### Frontend Pages
+- `/login` — Login (3 tabs: E-mail, Link mágico, Dev picker)
+- `/signup` — Signup (placeholder, UI-only)
+- `/reset-password` — Reset password (placeholder, UI-only)
+- `/` — Dashboard with KPI cards (protected, all authenticated roles)
+- `/admin/users` — Admin user management (protected, admin-only)
 
 ### Design Tokens
 - Primary: Deep Blue (#1e40af / HSL 217 91% 40%)

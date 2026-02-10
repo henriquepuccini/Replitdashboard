@@ -70,7 +70,9 @@ export async function loadCurrentUser(
   _res: Response,
   next: NextFunction
 ) {
-  const userId = req.headers["x-user-id"] as string | undefined;
+  const userId =
+    req.session?.userId ||
+    (req.headers["x-user-id"] as string | undefined);
 
   if (userId) {
     try {

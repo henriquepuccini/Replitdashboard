@@ -33,6 +33,66 @@ export async function registerRoutes(
   app.use("/api", loadCurrentUser);
 
   // =========================================================================
+  // AUTH SESSION
+  // =========================================================================
+
+  app.get("/api/auth/me", (req, res) => {
+    if (!req.currentUser) {
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+    res.json(req.currentUser);
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email) {
+        return res.status(400).json({ message: "Email is required" });
+      }
+
+      const user = await storage.getUserByEmail(email);
+      if (!user) {
+        return res.status(401).json({ message: "User not found" });
+      }
+      if (!user.isActive) {
+        return res.status(403).json({ message: "Account is deactivated" });
+      }
+
+      req.session.userId = user.id;
+      res.json(user);
+    } catch (error) {
+      res.status(500).json({ message: "Login failed" });
+    }
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    req.session.destroy((err) => {
+      if (err) {
+        return res.status(500).json({ message: "Logout failed" });
+      }
+      res.clearCookie("connect.sid");
+      res.json({ message: "Logged out" });
+    });
+  });
+
+  app.get("/api/auth/dev-users", async (_req, res) => {
+    try {
+      const allUsers = await storage.getUsers();
+      const minimal = allUsers
+        .filter((u) => u.isActive)
+        .map((u) => ({
+          id: u.id,
+          email: u.email,
+          fullName: u.fullName,
+          role: u.role,
+        }));
+      res.json(minimal);
+    } catch {
+      res.status(500).json({ message: "Failed to fetch dev users" });
+    }
+  });
+
+  // =========================================================================
   // USERS
   // =========================================================================
 
