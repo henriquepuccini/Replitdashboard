@@ -1,0 +1,66 @@
+Corporativo Moderno + Data Visualization
+- Inspiração em dashboards de empresas educacionais de alto padrão
+- Foco em clareza, hierarquia visual e apresentação de dados
+
+**Core Principles**:
+1. Hierarquia clara através de tipografia e espaçamento
+2. Dados como protagonista - gráficos interativos em posição de destaque
+3. Navegação intuitiva com sidebar persistente
+4. Ênfase em legibilidade e acessibilidade
+
+**Color Philosophy**:
+- Paleta: Azul profundo (#1e40af), branco, cinza neutro (#6b7280)
+- Azul transmite confiança e profissionalismo (ideal para educação)
+- Acentos em verde suave (#10b981) para ações positivas
+- Fundo branco com cards em cinza muito claro para contraste suave
+
+**Layout Paradigm**:
+- Sidebar esquerda fixa com navegação
+- Conteúdo principal em grid responsivo
+- Cards com sombras suaves para profundidade
+- Seções bem definidas: Overview, Processo de Vendas, KPIs, Fluxos
+
+**Signature Elements**:
+1. Cards com borda superior colorida (azul/verde)
+2. Gráficos com gradientes suaves
+3. Ícones minimalistas em cada seção
+4. Badges de status (ativo, concluído, em progresso)
+
+**Interaction Philosophy**:
+- Hover effects sutis em cards (elevação leve)
+- Cliques expandem detalhes em modais
+- Transições suaves entre seções
+- Tooltips informativos
+
+**Animation**:
+- Fade-in ao carregar seções
+- Slide-in para cards
+- Animações de contagem para números (0 → valor final)
+- Transições de 300ms para mudanças de estado
+
+**Typography System**:
+- Display: Poppins Bold (títulos principais)
+- Heading: Poppins SemiBold (subtítulos)
+- Body: Inter Regular (conteúdo)
+- Mono: Courier (dados/código)
+- Hierarquia: 32px → 24px → 18px → 16px → 14px
+
+
+**Paleta de Cores Final**:
+- Primária: Azul Profundo (#1e40af)
+- Secundária: Verde Suave (#10b981)
+- Neutros: Branco, Cinza (#6b7280), Cinza Claro (#f3f4f6)
+
+**Tipografia**:
+- Títulos: Poppins Bold
+- Subtítulos: Poppins SemiBold
+- Corpo: Inter Regular
+- Dados: Courier Mono
+
+**Componentes Chave**:
+- Sidebar com navegação persistente
+- Cards com borda superior colorida
+- Gráficos com Recharts
+- Modais para detalhes
+- Badges de status
+- Botões com ícones
