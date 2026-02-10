@@ -5,6 +5,10 @@ import {
   insertUserSchema,
   insertSchoolSchema,
   insertUserSchoolSchema,
+  insertConnectorSchema,
+  insertConnectorMappingSchema,
+  insertSyncRunSchema,
+  insertRawIngestFileSchema,
   type SyncOperation,
 } from "@shared/schema";
 import { ZodError } from "zod";
@@ -13,8 +17,13 @@ import {
   requireAuth,
   requireRole,
   isAdmin,
+  isOps,
+  isExec,
   hasElevatedRole,
   isDirectorOfSchool,
+  isConnectorOwner,
+  getUserSchoolIds,
+  canViewNormalizedData,
   loadCurrentUser,
   filterUserUpdateFields,
 } from "./rbac";
@@ -501,13 +510,381 @@ export async function registerRoutes(
     requireRole("admin"),
     async (req, res) => {
       try {
-        const logs = await storage.getSyncLogsByUserId(req.params.userId);
+        const logs = await storage.getSyncLogsByUserId(req.params.userId as string);
         res.json(logs);
       } catch (error) {
         res.status(500).json({ message: "Failed to fetch sync logs" });
       }
     }
   );
+
+  // =========================================================================
+  // CONNECTORS
+  // =========================================================================
+
+  app.get("/api/connectors", requireAuth, async (req, res) => {
+    try {
+      const allConnectors = await storage.getConnectors();
+      if (isAdmin(req) || isOps(req)) {
+        return res.json(allConnectors);
+      }
+      const owned = allConnectors.filter(
+        (c) => c.ownerId === req.currentUser!.id
+      );
+      res.json(owned);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch connectors" });
+    }
+  });
+
+  app.get("/api/connectors/:id", requireAuth, async (req, res) => {
+    try {
+      const connector = await storage.getConnector(req.params.id as string);
+      if (!connector) {
+        return res.status(404).json({ message: "Connector not found" });
+      }
+      if (
+        !isAdmin(req) &&
+        !isOps(req) &&
+        connector.ownerId !== req.currentUser!.id
+      ) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      res.json(connector);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch connector" });
+    }
+  });
+
+  app.post(
+    "/api/connectors",
+    requireAuth,
+    requireRole("admin"),
+    async (req, res) => {
+      try {
+        const data = insertConnectorSchema.parse({
+          ...req.body,
+          ownerId: req.body.ownerId || req.currentUser!.id,
+        });
+        const connector = await storage.createConnector(data);
+        res.status(201).json(connector);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.patch("/api/connectors/:id", requireAuth, async (req, res) => {
+    try {
+      const connectorId = req.params.id as string;
+      if (
+        !isAdmin(req) &&
+        !(await isConnectorOwner(req, connectorId))
+      ) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const data = insertConnectorSchema.partial().parse(req.body);
+      const connector = await storage.updateConnector(connectorId, data);
+      if (!connector) {
+        return res.status(404).json({ message: "Connector not found" });
+      }
+      res.json(connector);
+    } catch (error) {
+      res.status(400).json({ message: handleZodError(error) });
+    }
+  });
+
+  app.delete(
+    "/api/connectors/:id",
+    requireAuth,
+    requireRole("admin"),
+    async (req, res) => {
+      try {
+        const deleted = await storage.deleteConnector(req.params.id as string);
+        if (!deleted) {
+          return res.status(404).json({ message: "Connector not found" });
+        }
+        res.status(204).send();
+      } catch (error) {
+        res.status(500).json({ message: "Failed to delete connector" });
+      }
+    }
+  );
+
+  // =========================================================================
+  // CONNECTOR MAPPINGS
+  // =========================================================================
+
+  app.get(
+    "/api/connectors/:connectorId/mappings",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        if (
+          !isAdmin(req) &&
+          !(await isConnectorOwner(req, connectorId))
+        ) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const mappings = await storage.getConnectorMappings(connectorId);
+        res.json(mappings);
+      } catch (error) {
+        res
+          .status(500)
+          .json({ message: "Failed to fetch connector mappings" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/connectors/:connectorId/mappings",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        if (
+          !isAdmin(req) &&
+          !(await isConnectorOwner(req, connectorId))
+        ) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const data = insertConnectorMappingSchema.parse({
+          ...req.body,
+          connectorId,
+        });
+        const mapping = await storage.createConnectorMapping(data);
+        res.status(201).json(mapping);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.patch(
+    "/api/connector-mappings/:id",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const mapping = await storage.getConnectorMapping(req.params.id as string);
+        if (!mapping) {
+          return res.status(404).json({ message: "Mapping not found" });
+        }
+        if (
+          !isAdmin(req) &&
+          !(await isConnectorOwner(req, mapping.connectorId))
+        ) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const data = insertConnectorMappingSchema.partial().parse(req.body);
+        const updated = await storage.updateConnectorMapping(
+          req.params.id as string,
+          data
+        );
+        if (!updated) {
+          return res.status(404).json({ message: "Mapping not found" });
+        }
+        res.json(updated);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.delete(
+    "/api/connector-mappings/:id",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const mapping = await storage.getConnectorMapping(req.params.id as string);
+        if (!mapping) {
+          return res.status(404).json({ message: "Mapping not found" });
+        }
+        if (
+          !isAdmin(req) &&
+          !(await isConnectorOwner(req, mapping.connectorId))
+        ) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const deleted = await storage.deleteConnectorMapping(req.params.id as string);
+        if (!deleted) {
+          return res.status(404).json({ message: "Mapping not found" });
+        }
+        res.status(204).send();
+      } catch (error) {
+        res.status(500).json({ message: "Failed to delete mapping" });
+      }
+    }
+  );
+
+  // =========================================================================
+  // SYNC RUNS (append-only log for auditability)
+  // =========================================================================
+
+  app.get(
+    "/api/connectors/:connectorId/sync-runs",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        if (
+          !isAdmin(req) &&
+          !isOps(req) &&
+          !(await isConnectorOwner(req, connectorId))
+        ) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const runs = await storage.getSyncRuns(connectorId);
+        res.json(runs);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch sync runs" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/connectors/:connectorId/sync-runs",
+    requireAuth,
+    requireRole("admin", "ops"),
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        const data = insertSyncRunSchema.parse({
+          ...req.body,
+          connectorId,
+        });
+        const run = await storage.createSyncRun(data);
+        res.status(201).json(run);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.patch(
+    "/api/sync-runs/:id",
+    requireAuth,
+    requireRole("admin", "ops"),
+    async (req, res) => {
+      try {
+        const data = insertSyncRunSchema.partial().parse(req.body);
+        const run = await storage.updateSyncRun(req.params.id as string, data);
+        if (!run) {
+          return res.status(404).json({ message: "Sync run not found" });
+        }
+        res.json(run);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  // =========================================================================
+  // RAW INGEST FILES (append-only log for auditability)
+  // =========================================================================
+
+  app.get(
+    "/api/connectors/:connectorId/files",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        if (
+          !isAdmin(req) &&
+          !isOps(req) &&
+          !(await isConnectorOwner(req, connectorId))
+        ) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const files = await storage.getRawIngestFiles(connectorId);
+        res.json(files);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch ingest files" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/connectors/:connectorId/files",
+    requireAuth,
+    requireRole("admin", "ops"),
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        const data = insertRawIngestFileSchema.parse({
+          ...req.body,
+          connectorId,
+        });
+        const file = await storage.createRawIngestFile(data);
+        res.status(201).json(file);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  // =========================================================================
+  // NORMALIZED DATA (leads, payments, enrollments)
+  // School-scoped access: sellers see their schools, directors/finance see
+  // their school scope, admin/exec/ops see all
+  // =========================================================================
+
+  app.get("/api/leads", requireAuth, async (req, res) => {
+    try {
+      if (!canViewNormalizedData(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const allLeads = await storage.getLeads();
+      if (isAdmin(req) || isExec(req) || isOps(req)) {
+        return res.json(allLeads);
+      }
+      const schoolIds = getUserSchoolIds(req);
+      const scoped = allLeads.filter(
+        (l) => l.schoolId && schoolIds.includes(l.schoolId)
+      );
+      res.json(scoped);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch leads" });
+    }
+  });
+
+  app.get("/api/payments", requireAuth, async (req, res) => {
+    try {
+      if (!canViewNormalizedData(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const allPayments = await storage.getPayments();
+      if (isAdmin(req) || isExec(req) || isOps(req)) {
+        return res.json(allPayments);
+      }
+      const schoolIds = getUserSchoolIds(req);
+      const scoped = allPayments.filter(
+        (p) => p.schoolId && schoolIds.includes(p.schoolId)
+      );
+      res.json(scoped);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch payments" });
+    }
+  });
+
+  app.get("/api/enrollments", requireAuth, async (req, res) => {
+    try {
+      if (!canViewNormalizedData(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const allEnrollments = await storage.getEnrollments();
+      if (isAdmin(req) || isExec(req) || isOps(req)) {
+        return res.json(allEnrollments);
+      }
+      const schoolIds = getUserSchoolIds(req);
+      const scoped = allEnrollments.filter(
+        (e) => e.schoolId && schoolIds.includes(e.schoolId)
+      );
+      res.json(scoped);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch enrollments" });
+    }
+  });
 
   return httpServer;
 }

@@ -93,6 +93,33 @@ export async function loadCurrentUser(
   next();
 }
 
+export function isOps(req: Request): boolean {
+  return req.currentUser?.role === "ops" && req.currentUser?.isActive === true;
+}
+
+export function isExec(req: Request): boolean {
+  return req.currentUser?.role === "exec" && req.currentUser?.isActive === true;
+}
+
+export async function isConnectorOwner(
+  req: Request,
+  connectorId: string
+): Promise<boolean> {
+  if (!req.currentUser) return false;
+  const connector = await storage.getConnector(connectorId);
+  return connector?.ownerId === req.currentUser.id;
+}
+
+export function getUserSchoolIds(req: Request): string[] {
+  return req.currentUserSchools?.map((us) => us.schoolId) || [];
+}
+
+export function canViewNormalizedData(req: Request): boolean {
+  if (!req.currentUser?.isActive) return false;
+  const role = req.currentUser.role;
+  return ["admin", "exec", "ops", "director", "finance", "seller"].includes(role);
+}
+
 export const MUTABLE_USER_FIELDS_SELF = [
   "fullName",
   "avatarUrl",

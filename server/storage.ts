@@ -75,6 +75,7 @@ export interface IStorage {
   updateConnector(id: string, data: Partial<InsertConnector>): Promise<Connector | undefined>;
   deleteConnector(id: string): Promise<boolean>;
 
+  getConnectorMapping(id: string): Promise<ConnectorMapping | undefined>;
   getConnectorMappings(connectorId: string): Promise<ConnectorMapping[]>;
   createConnectorMapping(mapping: InsertConnectorMapping): Promise<ConnectorMapping>;
   updateConnectorMapping(id: string, data: Partial<InsertConnectorMapping>): Promise<ConnectorMapping | undefined>;
@@ -85,18 +86,22 @@ export interface IStorage {
   markFileProcessed(id: string): Promise<RawIngestFile | undefined>;
 
   getSyncRun(id: string): Promise<SyncRun | undefined>;
+  getSyncRuns(connectorId: string, limit?: number): Promise<SyncRun[]>;
   getSyncRunsByConnectorId(connectorId: string, limit?: number): Promise<SyncRun[]>;
   createSyncRun(run: InsertSyncRun): Promise<SyncRun>;
   updateSyncRun(id: string, data: Partial<InsertSyncRun>): Promise<SyncRun | undefined>;
 
+  getLeads(): Promise<Lead[]>;
   getLeadsBySchoolId(schoolId: string): Promise<Lead[]>;
   createLead(lead: InsertLead): Promise<Lead>;
   upsertLead(lead: InsertLead): Promise<Lead>;
 
+  getPayments(): Promise<Payment[]>;
   getPaymentsBySchoolId(schoolId: string): Promise<Payment[]>;
   createPayment(payment: InsertPayment): Promise<Payment>;
   upsertPayment(payment: InsertPayment): Promise<Payment>;
 
+  getEnrollments(): Promise<Enrollment[]>;
   getEnrollmentsBySchoolId(schoolId: string): Promise<Enrollment[]>;
   createEnrollment(enrollment: InsertEnrollment): Promise<Enrollment>;
   upsertEnrollment(enrollment: InsertEnrollment): Promise<Enrollment>;
@@ -315,6 +320,11 @@ export class DatabaseStorage implements IStorage {
     return result.length > 0;
   }
 
+  async getConnectorMapping(id: string): Promise<ConnectorMapping | undefined> {
+    const [mapping] = await db.select().from(connectorMappings).where(eq(connectorMappings.id, id));
+    return mapping;
+  }
+
   async getConnectorMappings(connectorId: string): Promise<ConnectorMapping[]> {
     return db.select().from(connectorMappings).where(eq(connectorMappings.connectorId, connectorId));
   }
@@ -361,6 +371,10 @@ export class DatabaseStorage implements IStorage {
     return run;
   }
 
+  async getSyncRuns(connectorId: string, limit: number = 50): Promise<SyncRun[]> {
+    return this.getSyncRunsByConnectorId(connectorId, limit);
+  }
+
   async getSyncRunsByConnectorId(connectorId: string, limit: number = 50): Promise<SyncRun[]> {
     return db
       .select()
@@ -382,6 +396,10 @@ export class DatabaseStorage implements IStorage {
       .where(eq(syncRuns.id, id))
       .returning();
     return updated;
+  }
+
+  async getLeads(): Promise<Lead[]> {
+    return db.select().from(leads);
   }
 
   async getLeadsBySchoolId(schoolId: string): Promise<Lead[]> {
@@ -409,6 +427,10 @@ export class DatabaseStorage implements IStorage {
     return upserted;
   }
 
+  async getPayments(): Promise<Payment[]> {
+    return db.select().from(payments);
+  }
+
   async getPaymentsBySchoolId(schoolId: string): Promise<Payment[]> {
     return db.select().from(payments).where(eq(payments.schoolId, schoolId));
   }
@@ -432,6 +454,10 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return upserted;
+  }
+
+  async getEnrollments(): Promise<Enrollment[]> {
+    return db.select().from(enrollments);
   }
 
   async getEnrollmentsBySchoolId(schoolId: string): Promise<Enrollment[]> {

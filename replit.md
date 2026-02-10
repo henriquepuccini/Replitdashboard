@@ -4,6 +4,16 @@
 Multi-level commercial performance dashboard for a network of six schools. Consolidates CRM, financial, and academic data to present commercial and financial KPIs segmented by seller, school, and network with role-based access control.
 
 ## Recent Changes
+- **2026-02-10**: Connectors RLS Policies & RBAC Routes
+  - RLS enabled on connectors, connector_mappings, sync_runs, raw_ingest_files, leads, payments, enrollments
+  - Helper functions: is_connector_owner, is_ops, is_exec, get_user_school_ids, is_user_in_school
+  - Connectors: owner/admin SELECT, admin INSERT/UPDATE/DELETE, ops SELECT, owner UPDATE
+  - Connector_mappings: owner or admin for all CRUD operations
+  - Sync_runs & raw_ingest_files: append-only (DELETE denied), admin/ops INSERT/UPDATE
+  - Normalized data: admin/exec/ops see all; director/finance/seller see school-scoped via user_schools join
+  - Application-level RBAC: isOps, isExec, isConnectorOwner, getUserSchoolIds, canViewNormalizedData helpers
+  - Full API routes for connectors, mappings, sync-runs, files, leads, payments, enrollments
+  - SQL migration 005 with rollback
 - **2026-02-10**: Connectors & Sync Schemas
   - Created `connectors` table: name, type (crm/finance/academic), config (JSONB), schedule_cron, owner_id FK→users
   - Created `connector_mappings` table: connector_id FK, source_path, target_field, transform (JSONB)
@@ -106,6 +116,15 @@ Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
 - `GET /api/auth/dev-users` — Dev-mode user list (id, email, fullName, role)
 - `POST /api/auth/sync` — Supabase Auth webhook receiver (service role auth, not session auth)
 - `GET /api/auth/sync-logs/:userId` — Admin-only audit trail viewer
+- `GET/POST /api/connectors`, `GET/PATCH/DELETE /api/connectors/:id` — Admin creates; owner/admin/ops can read
+- `GET/POST /api/connectors/:connectorId/mappings` — Owner or admin only
+- `PATCH/DELETE /api/connector-mappings/:id` — Owner or admin only
+- `GET/POST /api/connectors/:connectorId/sync-runs` — Owner/admin/ops can read; admin/ops can create
+- `PATCH /api/sync-runs/:id` — Admin/ops only (update status)
+- `GET/POST /api/connectors/:connectorId/files` — Owner/admin/ops can read; admin/ops can create
+- `GET /api/leads` — School-scoped: seller/director/finance see their schools; admin/exec/ops see all
+- `GET /api/payments` — School-scoped: same as leads
+- `GET /api/enrollments` — School-scoped: same as leads
 
 ### Frontend Pages
 - `/login` — Login (3 tabs: E-mail, Link mágico, Dev picker)
