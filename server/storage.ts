@@ -5,12 +5,15 @@ import {
   type InsertSchool,
   type UserSchool,
   type InsertUserSchool,
+  type AuthUserSyncLog,
+  type InsertAuthUserSyncLog,
   users,
   schools,
   userSchools,
+  authUserSyncLogs,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -19,6 +22,14 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: string, data: Partial<InsertUser>): Promise<User | undefined>;
   deleteUser(id: string): Promise<boolean>;
+
+  upsertUserFromAuth(
+    id: string,
+    email: string,
+    fullName?: string | null,
+    avatarUrl?: string | null
+  ): Promise<User>;
+  softDeleteUser(id: string): Promise<User | undefined>;
 
   getSchool(id: string): Promise<School | undefined>;
   getSchoolByCode(code: string): Promise<School | undefined>;
@@ -32,6 +43,9 @@ export interface IStorage {
   getUserSchoolsBySchoolId(schoolId: string): Promise<UserSchool[]>;
   createUserSchool(userSchool: InsertUserSchool): Promise<UserSchool>;
   deleteUserSchool(id: string): Promise<boolean>;
+
+  createSyncLog(log: InsertAuthUserSyncLog): Promise<AuthUserSyncLog>;
+  getSyncLogsByUserId(userId: string, limit?: number): Promise<AuthUserSyncLog[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -157,6 +171,62 @@ export class DatabaseStorage implements IStorage {
       .where(eq(userSchools.id, id))
       .returning();
     return result.length > 0;
+  }
+
+  async upsertUserFromAuth(
+    id: string,
+    email: string,
+    fullName?: string | null,
+    avatarUrl?: string | null
+  ): Promise<User> {
+    const [user] = await db
+      .insert(users)
+      .values({
+        id,
+        email,
+        fullName: fullName ?? null,
+        avatarUrl: avatarUrl ?? null,
+      })
+      .onConflictDoUpdate({
+        target: users.id,
+        set: {
+          email,
+          fullName: fullName !== undefined ? fullName : undefined,
+          avatarUrl: avatarUrl !== undefined ? avatarUrl : undefined,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return user;
+  }
+
+  async softDeleteUser(id: string): Promise<User | undefined> {
+    const [user] = await db
+      .update(users)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning();
+    return user;
+  }
+
+  async createSyncLog(log: InsertAuthUserSyncLog): Promise<AuthUserSyncLog> {
+    const [entry] = await db
+      .insert(authUserSyncLogs)
+      .values(log)
+      .returning();
+    return entry;
+  }
+
+  async getSyncLogsByUserId(
+    userId: string,
+    limit: number = 50
+  ): Promise<AuthUserSyncLog[]> {
+    return db
+      .select()
+      .from(authUserSyncLogs)
+      .where(eq(authUserSyncLogs.userId, userId))
+      .orderBy(desc(authUserSyncLogs.createdAt))
+      .limit(limit);
   }
 }
 

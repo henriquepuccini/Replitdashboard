@@ -4,6 +4,17 @@
 Multi-level commercial performance dashboard for a network of six schools. Consolidates CRM, financial, and academic data to present commercial and financial KPIs segmented by seller, school, and network with role-based access control.
 
 ## Recent Changes
+- **2026-02-10**: Created Auth Sync Trigger and Webhook
+  - Created `auth_user_sync_logs` audit trail table (Drizzle schema + SQL migration 003)
+  - Implemented `sync_auth_user()` PostgreSQL trigger function for direct DB trigger on auth.users
+  - Created Express webhook endpoint `POST /api/auth/sync` for Supabase Auth webhook/edge function approach
+  - INSERT: creates public.users with id=auth.users.id, email, metadata (full_name, avatar_url)
+  - UPDATE: upserts mutable fields (email, full_name, avatar_url) with ON CONFLICT handling
+  - DELETE: soft-deletes user (is_active=false) instead of hard delete
+  - Webhook auth: validates via SUPABASE_WEBHOOK_SECRET or SUPABASE_SERVICE_ROLE_KEY
+  - Admin-only endpoint `GET /api/auth/sync-logs/:userId` for viewing sync audit trail
+  - Added `upsertUserFromAuth()` and `softDeleteUser()` storage methods
+  - Migration rollback provided (003_auth_sync_trigger_rollback.sql)
 - **2026-02-10**: Set Auth RLS Policies and application-level RBAC
   - Created RLS policy SQL migration (002_rls_policies.sql) for Supabase deployment
   - Implemented Express RBAC middleware (server/rbac.ts) enforcing equivalent access rules
@@ -44,6 +55,7 @@ migrations/            - SQL migration and rollback files
 - **users**: id (UUID PK), email, full_name, avatar_url, preferred_language, role, school_id, is_active, created_at, updated_at
 - **schools**: id (UUID PK), name, code (unique), timezone, created_at, updated_at
 - **user_schools**: id (UUID PK), user_id (FK→users), school_id (FK→schools), role, created_at, updated_at
+- **auth_user_sync_logs**: id (UUID PK), user_id (UUID), operation (INSERT/UPDATE/DELETE), payload (text/JSONB), created_at
 
 ### Roles
 Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
@@ -53,6 +65,8 @@ Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
 - `GET/POST /api/schools`, `GET/PATCH/DELETE /api/schools/:id`
 - `GET /api/user-schools/user/:userId`, `GET /api/user-schools/school/:schoolId`
 - `POST /api/user-schools`, `DELETE /api/user-schools/:id`
+- `POST /api/auth/sync` — Supabase Auth webhook receiver (service role auth, not session auth)
+- `GET /api/auth/sync-logs/:userId` — Admin-only audit trail viewer
 
 ### Design Tokens
 - Primary: Deep Blue (#1e40af / HSL 217 91% 40%)
@@ -62,7 +76,12 @@ Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
 ### Supabase Auth Sync Strategy
 - `public.users.id` accepts externally-provided UUIDs from `auth.users`
 - The `insertUserSchema` allows passing an explicit `id` field for sync
-- A trigger stub for `auth.users` → `public.users` sync is documented in `migrations/001_auth_tables.sql`
+- **Two sync approaches** (choose based on Supabase access level):
+  - **Direct DB trigger**: `sync_auth_user()` function + trigger on auth.users (migration 003)
+  - **Webhook/Edge Function**: `POST /api/auth/sync` endpoint receives Supabase Auth events
+- Webhook auth: `SUPABASE_WEBHOOK_SECRET` header or `SUPABASE_SERVICE_ROLE_KEY` bearer token
+- INSERT → upsert into public.users; UPDATE → upsert mutable fields; DELETE → soft-delete (is_active=false)
+- All sync operations logged to `auth_user_sync_logs` for audit trail
 - Role values use CHECK constraints (not Postgres ENUM) for easier extensibility
 - No passwords stored in public.users — Supabase Auth manages credentials
 

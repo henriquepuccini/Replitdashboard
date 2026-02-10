@@ -5,6 +5,7 @@ import {
   insertUserSchema,
   insertSchoolSchema,
   insertUserSchoolSchema,
+  type SyncOperation,
 } from "@shared/schema";
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -301,6 +302,149 @@ export async function registerRoutes(
         res
           .status(500)
           .json({ message: "Failed to delete user-school mapping" });
+      }
+    }
+  );
+
+  // =========================================================================
+  // AUTH SYNC WEBHOOK
+  // =========================================================================
+  // Receives Supabase Auth webhook events and syncs to public.users.
+  // Protected by service role key or webhook secret — NOT by session auth.
+  // Supabase webhook payload format:
+  //   { type: "INSERT"|"UPDATE"|"DELETE", table: "users", schema: "auth",
+  //     record: { id, email, raw_user_meta_data: { full_name, avatar_url } },
+  //     old_record: { ... } }
+
+  app.post("/api/auth/sync", async (req, res) => {
+    try {
+      const webhookSecret = process.env.SUPABASE_WEBHOOK_SECRET;
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+      const authHeader = req.headers["authorization"] as string | undefined;
+      const webhookHeader = req.headers["x-supabase-webhook-secret"] as
+        | string
+        | undefined;
+
+      let authenticated = false;
+
+      if (webhookSecret && webhookHeader === webhookSecret) {
+        authenticated = true;
+      } else if (
+        serviceRoleKey &&
+        authHeader === `Bearer ${serviceRoleKey}`
+      ) {
+        authenticated = true;
+      }
+
+      if (!webhookSecret && !serviceRoleKey) {
+        console.error(
+          "AUTH SYNC: No SUPABASE_WEBHOOK_SECRET or SUPABASE_SERVICE_ROLE_KEY configured. " +
+            "Rejecting webhook request — configure at least one secret."
+        );
+        return res.status(503).json({
+          message: "Auth sync endpoint not configured. Set SUPABASE_WEBHOOK_SECRET or SUPABASE_SERVICE_ROLE_KEY.",
+        });
+      }
+
+      if (!authenticated) {
+        return res.status(401).json({ message: "Invalid webhook credentials" });
+      }
+
+      const { type, record, old_record } = req.body;
+
+      if (!type || !["INSERT", "UPDATE", "DELETE"].includes(type)) {
+        return res
+          .status(400)
+          .json({ message: "Invalid or missing 'type' field" });
+      }
+
+      const operation = type as SyncOperation;
+
+      if (operation === "INSERT" || operation === "UPDATE") {
+        if (!record?.id || !record?.email) {
+          return res
+            .status(400)
+            .json({ message: "Missing record.id or record.email" });
+        }
+
+        const metadata = record.raw_user_meta_data || {};
+        const fullName = metadata.full_name || null;
+        const avatarUrl = metadata.avatar_url || null;
+
+        const user = await storage.upsertUserFromAuth(
+          record.id,
+          record.email,
+          fullName,
+          avatarUrl
+        );
+
+        await storage.createSyncLog({
+          userId: record.id,
+          operation,
+          payload: JSON.stringify({
+            email: record.email,
+            full_name: fullName,
+            avatar_url: avatarUrl,
+            ...(operation === "UPDATE" && old_record
+              ? { old_email: old_record.email }
+              : {}),
+          }),
+        });
+
+        return res
+          .status(200)
+          .json({
+            message: `User ${operation === "INSERT" ? "inserted" : "updated"} successfully`,
+            user,
+          });
+      }
+
+      if (operation === "DELETE") {
+        const targetId = old_record?.id || record?.id;
+        if (!targetId) {
+          return res
+            .status(400)
+            .json({ message: "Missing user ID for delete operation" });
+        }
+
+        const user = await storage.softDeleteUser(targetId);
+
+        await storage.createSyncLog({
+          userId: targetId,
+          operation: "DELETE",
+          payload: JSON.stringify({
+            email: old_record?.email || record?.email,
+            soft_deleted: true,
+          }),
+        });
+
+        return res
+          .status(200)
+          .json({ message: "User soft-deleted successfully", user });
+      }
+
+      return res.status(400).json({ message: "Unhandled operation type" });
+    } catch (error) {
+      console.error("AUTH SYNC ERROR:", error);
+      res.status(500).json({
+        message: "Auth sync failed",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  });
+
+  // Admin endpoint to view sync logs for a user
+  app.get(
+    "/api/auth/sync-logs/:userId",
+    requireAuth,
+    requireRole("admin"),
+    async (req, res) => {
+      try {
+        const logs = await storage.getSyncLogsByUserId(req.params.userId);
+        res.json(logs);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch sync logs" });
       }
     }
   );

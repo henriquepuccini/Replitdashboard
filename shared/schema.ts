@@ -145,3 +145,39 @@ export type School = typeof schools.$inferSelect;
 
 export type InsertUserSchool = z.infer<typeof insertUserSchoolSchema>;
 export type UserSchool = typeof userSchools.$inferSelect;
+
+export const SYNC_OPERATIONS = ["INSERT", "UPDATE", "DELETE"] as const;
+export type SyncOperation = (typeof SYNC_OPERATIONS)[number];
+
+export const authUserSyncLogs = pgTable(
+  "auth_user_sync_logs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    userId: uuid("user_id").notNull(),
+    operation: varchar("operation", { length: 10 }).notNull(),
+    payload: text("payload"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_auth_sync_logs_user_id").on(table.userId),
+    index("idx_auth_sync_logs_created_at").on(table.createdAt),
+  ]
+);
+
+export const insertAuthUserSyncLogSchema = createInsertSchema(authUserSyncLogs)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    userId: z.string().uuid("Invalid user ID"),
+    operation: z.enum(SYNC_OPERATIONS),
+    payload: z.string().nullable().optional(),
+  });
+
+export type InsertAuthUserSyncLog = z.infer<typeof insertAuthUserSyncLogSchema>;
+export type AuthUserSyncLog = typeof authUserSyncLogs.$inferSelect;
