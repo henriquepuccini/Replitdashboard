@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard,
   Users,
+  Plug,
   LogOut,
   Moon,
   Sun,
@@ -76,6 +77,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
 
   const isAdmin = user?.role === "admin";
+  const isOps = user?.role === "ops";
 
   const menuItems = [
     {
@@ -83,6 +85,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       url: "/",
       icon: LayoutDashboard,
       visible: true,
+    },
+    {
+      title: "Integrações",
+      url: "/integrations",
+      icon: Plug,
+      visible: isAdmin || isOps,
     },
     {
       title: "Usuários",
@@ -112,7 +120,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                       <SidebarMenuItem key={item.title}>
                         <SidebarMenuButton
                           asChild
-                          isActive={location === item.url}
+                          isActive={item.url === "/" ? location === "/" : location.startsWith(item.url)}
                           data-testid={`link-sidebar-${item.url === "/" ? "dashboard" : item.url.replace(/\//g, "-").slice(1)}`}
                         >
                           <Link href={item.url}>

@@ -10,6 +10,8 @@ import SignupPage from "@/pages/signup";
 import ResetPasswordPage from "@/pages/reset-password";
 import DashboardPage from "@/pages/dashboard";
 import AdminUsersPage from "@/pages/admin-users";
+import IntegrationsPage from "@/pages/integrations";
+import IntegrationDetailPage from "@/pages/integration-detail";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -31,6 +33,22 @@ function Router() {
         <ProtectedRoute allowedRoles={["admin"]}>
           <AppLayout>
             <AdminUsersPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/integrations">
+        <ProtectedRoute allowedRoles={["admin", "ops"]}>
+          <AppLayout>
+            <IntegrationsPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/integrations/:id">
+        <ProtectedRoute allowedRoles={["admin", "ops"]}>
+          <AppLayout>
+            <IntegrationDetailPage />
           </AppLayout>
         </ProtectedRoute>
       </Route>
