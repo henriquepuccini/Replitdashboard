@@ -4,6 +4,14 @@
 Multi-level commercial performance dashboard for a network of six schools. Consolidates CRM, financial, and academic data to present commercial and financial KPIs segmented by seller, school, and network with role-based access control.
 
 ## Recent Changes
+- **2026-02-10**: Set Auth RLS Policies and application-level RBAC
+  - Created RLS policy SQL migration (002_rls_policies.sql) for Supabase deployment
+  - Implemented Express RBAC middleware (server/rbac.ts) enforcing equivalent access rules
+  - All API routes now require authentication via x-user-id header
+  - Role-based access: admin sees all, seller sees only own data, directors see school scope
+  - Users can only update own mutable fields (full_name, avatar_url, preferred_language)
+  - Schools: all authenticated users see minimal info; elevated roles see full records
+  - User-schools: user sees own, admin sees all, director sees their school's mappings
 - **2026-02-10**: Created auth database schemas (users, schools, user_schools) with PostgreSQL
   - Added CHECK constraints for role validation (admin, director, seller, exec, finance, ops)
   - Added updated_at triggers for automatic timestamp management
