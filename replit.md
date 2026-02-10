@@ -4,6 +4,17 @@
 Multi-level commercial performance dashboard for a network of six schools. Consolidates CRM, financial, and academic data to present commercial and financial KPIs segmented by seller, school, and network with role-based access control.
 
 ## Recent Changes
+- **2026-02-10**: Connectors & Sync Schemas
+  - Created `connectors` table: name, type (crm/finance/academic), config (JSONB), schedule_cron, owner_id FK→users
+  - Created `connector_mappings` table: connector_id FK, source_path, target_field, transform (JSONB)
+  - Created `raw_ingest_files` table: connector_id FK, bucket_path, file_name, file_size, processed
+  - Created `sync_runs` table: connector_id FK, started_at, finished_at, status, records_in/out, error (JSONB)
+  - Normalized data tables: `leads`, `payments`, `enrollments` with source_connector_id, source_id, payload (JSONB), school_id
+  - Unique composite indexes on (source_connector_id, source_id) for upsert support
+  - CHECK constraints: connectors.type, sync_runs.status
+  - Auto-updated_at triggers on connectors, connector_mappings, leads, payments, enrollments
+  - IStorage interface + DatabaseStorage CRUD methods for all new tables (with upsert for normalized tables)
+  - SQL migration 004 with rollback
 - **2026-02-10**: Auth Frontend Pages & Session Auth
   - Session-based auth with express-session (httpOnly cookies, secure in production)
   - Auth endpoints: POST /api/auth/login (email-only dev mode), POST /api/auth/logout, GET /api/auth/me, GET /api/auth/dev-users
@@ -63,10 +74,23 @@ migrations/            - SQL migration and rollback files
 ```
 
 ### Database Schema
+
+#### Auth & User Tables
 - **users**: id (UUID PK), email, full_name, avatar_url, preferred_language, role, school_id, is_active, created_at, updated_at
 - **schools**: id (UUID PK), name, code (unique), timezone, created_at, updated_at
 - **user_schools**: id (UUID PK), user_id (FK→users), school_id (FK→schools), role, created_at, updated_at
 - **auth_user_sync_logs**: id (UUID PK), user_id (UUID), operation (INSERT/UPDATE/DELETE), payload (text/JSONB), created_at
+
+#### Connector & Sync Tables
+- **connectors**: id (UUID PK), name, type (crm|finance|academic), config (JSONB), schedule_cron, owner_id (FK→users), is_active, created_at, updated_at
+- **connector_mappings**: id (UUID PK), connector_id (FK→connectors), source_path, target_field, transform (JSONB), created_at, updated_at
+- **raw_ingest_files**: id (UUID PK), connector_id (FK→connectors), bucket_path, file_name, file_size (bigint), processed, created_at
+- **sync_runs**: id (UUID PK), connector_id (FK→connectors), started_at, finished_at, status (pending|running|success|failed), records_in, records_out, error (JSONB), created_at
+
+#### Normalized Data Tables
+- **leads**: id (UUID PK), source_connector_id (FK→connectors), source_id (unique with connector), payload (JSONB), school_id (FK→schools), created_at, updated_at
+- **payments**: id (UUID PK), source_connector_id (FK→connectors), source_id (unique with connector), payload (JSONB), school_id (FK→schools), created_at, updated_at
+- **enrollments**: id (UUID PK), source_connector_id (FK→connectors), source_id (unique with connector), payload (JSONB), school_id (FK→schools), created_at, updated_at
 
 ### Roles
 Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
@@ -110,10 +134,20 @@ Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
 ### Constraints
 - `chk_users_role`: CHECK constraint on users.role
 - `chk_user_schools_role`: CHECK constraint on user_schools.role
+- `chk_connectors_type`: CHECK constraint on connectors.type (crm, finance, academic)
+- `chk_sync_runs_status`: CHECK constraint on sync_runs.status (pending, running, success, failed)
+- `uq_leads_source`: UNIQUE(source_connector_id, source_id) for upsert
+- `uq_payments_source`: UNIQUE(source_connector_id, source_id) for upsert
+- `uq_enrollments_source`: UNIQUE(source_connector_id, source_id) for upsert
 - `users_school_id_schools_id_fk`: FK users.school_id → schools.id (ON DELETE SET NULL)
-- `user_schools_user_id_users_id_fk`: FK user_schools.user_id → users.id (ON DELETE CASCADE)
-- `user_schools_school_id_schools_id_fk`: FK user_schools.school_id → schools.id (ON DELETE CASCADE)
-- `trg_*_updated_at`: Auto-update triggers on all three tables
+- `user_schools_*_fk`: FK CASCADE to users and schools
+- `connectors_owner_id_fk`: FK connectors.owner_id → users.id (ON DELETE CASCADE)
+- `connector_mappings_connector_id_fk`: FK → connectors (ON DELETE CASCADE)
+- `raw_ingest_files_connector_id_fk`: FK → connectors (ON DELETE CASCADE)
+- `sync_runs_connector_id_fk`: FK → connectors (ON DELETE CASCADE)
+- `leads/payments/enrollments_source_connector_id_fk`: FK → connectors (ON DELETE CASCADE)
+- `leads/payments/enrollments_school_id_fk`: FK → schools (ON DELETE SET NULL)
+- `trg_*_updated_at`: Auto-update triggers on all tables with updated_at column
 
 ## User Preferences
 - Language: Portuguese (Brazil)

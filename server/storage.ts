@@ -7,10 +7,31 @@ import {
   type InsertUserSchool,
   type AuthUserSyncLog,
   type InsertAuthUserSyncLog,
+  type Connector,
+  type InsertConnector,
+  type ConnectorMapping,
+  type InsertConnectorMapping,
+  type RawIngestFile,
+  type InsertRawIngestFile,
+  type SyncRun,
+  type InsertSyncRun,
+  type Lead,
+  type InsertLead,
+  type Payment,
+  type InsertPayment,
+  type Enrollment,
+  type InsertEnrollment,
   users,
   schools,
   userSchools,
   authUserSyncLogs,
+  connectors,
+  connectorMappings,
+  rawIngestFiles,
+  syncRuns,
+  leads,
+  payments,
+  enrollments,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc } from "drizzle-orm";
@@ -46,6 +67,39 @@ export interface IStorage {
 
   createSyncLog(log: InsertAuthUserSyncLog): Promise<AuthUserSyncLog>;
   getSyncLogsByUserId(userId: string, limit?: number): Promise<AuthUserSyncLog[]>;
+
+  getConnector(id: string): Promise<Connector | undefined>;
+  getConnectors(): Promise<Connector[]>;
+  getConnectorsByOwnerId(ownerId: string): Promise<Connector[]>;
+  createConnector(connector: InsertConnector): Promise<Connector>;
+  updateConnector(id: string, data: Partial<InsertConnector>): Promise<Connector | undefined>;
+  deleteConnector(id: string): Promise<boolean>;
+
+  getConnectorMappings(connectorId: string): Promise<ConnectorMapping[]>;
+  createConnectorMapping(mapping: InsertConnectorMapping): Promise<ConnectorMapping>;
+  updateConnectorMapping(id: string, data: Partial<InsertConnectorMapping>): Promise<ConnectorMapping | undefined>;
+  deleteConnectorMapping(id: string): Promise<boolean>;
+
+  getRawIngestFiles(connectorId: string): Promise<RawIngestFile[]>;
+  createRawIngestFile(file: InsertRawIngestFile): Promise<RawIngestFile>;
+  markFileProcessed(id: string): Promise<RawIngestFile | undefined>;
+
+  getSyncRun(id: string): Promise<SyncRun | undefined>;
+  getSyncRunsByConnectorId(connectorId: string, limit?: number): Promise<SyncRun[]>;
+  createSyncRun(run: InsertSyncRun): Promise<SyncRun>;
+  updateSyncRun(id: string, data: Partial<InsertSyncRun>): Promise<SyncRun | undefined>;
+
+  getLeadsBySchoolId(schoolId: string): Promise<Lead[]>;
+  createLead(lead: InsertLead): Promise<Lead>;
+  upsertLead(lead: InsertLead): Promise<Lead>;
+
+  getPaymentsBySchoolId(schoolId: string): Promise<Payment[]>;
+  createPayment(payment: InsertPayment): Promise<Payment>;
+  upsertPayment(payment: InsertPayment): Promise<Payment>;
+
+  getEnrollmentsBySchoolId(schoolId: string): Promise<Enrollment[]>;
+  createEnrollment(enrollment: InsertEnrollment): Promise<Enrollment>;
+  upsertEnrollment(enrollment: InsertEnrollment): Promise<Enrollment>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -227,6 +281,182 @@ export class DatabaseStorage implements IStorage {
       .where(eq(authUserSyncLogs.userId, userId))
       .orderBy(desc(authUserSyncLogs.createdAt))
       .limit(limit);
+  }
+
+  async getConnector(id: string): Promise<Connector | undefined> {
+    const [connector] = await db.select().from(connectors).where(eq(connectors.id, id));
+    return connector;
+  }
+
+  async getConnectors(): Promise<Connector[]> {
+    return db.select().from(connectors);
+  }
+
+  async getConnectorsByOwnerId(ownerId: string): Promise<Connector[]> {
+    return db.select().from(connectors).where(eq(connectors.ownerId, ownerId));
+  }
+
+  async createConnector(connector: InsertConnector): Promise<Connector> {
+    const [created] = await db.insert(connectors).values(connector).returning();
+    return created;
+  }
+
+  async updateConnector(id: string, data: Partial<InsertConnector>): Promise<Connector | undefined> {
+    const [updated] = await db
+      .update(connectors)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(connectors.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteConnector(id: string): Promise<boolean> {
+    const result = await db.delete(connectors).where(eq(connectors.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async getConnectorMappings(connectorId: string): Promise<ConnectorMapping[]> {
+    return db.select().from(connectorMappings).where(eq(connectorMappings.connectorId, connectorId));
+  }
+
+  async createConnectorMapping(mapping: InsertConnectorMapping): Promise<ConnectorMapping> {
+    const [created] = await db.insert(connectorMappings).values(mapping).returning();
+    return created;
+  }
+
+  async updateConnectorMapping(id: string, data: Partial<InsertConnectorMapping>): Promise<ConnectorMapping | undefined> {
+    const [updated] = await db
+      .update(connectorMappings)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(connectorMappings.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteConnectorMapping(id: string): Promise<boolean> {
+    const result = await db.delete(connectorMappings).where(eq(connectorMappings.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async getRawIngestFiles(connectorId: string): Promise<RawIngestFile[]> {
+    return db.select().from(rawIngestFiles).where(eq(rawIngestFiles.connectorId, connectorId));
+  }
+
+  async createRawIngestFile(file: InsertRawIngestFile): Promise<RawIngestFile> {
+    const [created] = await db.insert(rawIngestFiles).values(file).returning();
+    return created;
+  }
+
+  async markFileProcessed(id: string): Promise<RawIngestFile | undefined> {
+    const [updated] = await db
+      .update(rawIngestFiles)
+      .set({ processed: true })
+      .where(eq(rawIngestFiles.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getSyncRun(id: string): Promise<SyncRun | undefined> {
+    const [run] = await db.select().from(syncRuns).where(eq(syncRuns.id, id));
+    return run;
+  }
+
+  async getSyncRunsByConnectorId(connectorId: string, limit: number = 50): Promise<SyncRun[]> {
+    return db
+      .select()
+      .from(syncRuns)
+      .where(eq(syncRuns.connectorId, connectorId))
+      .orderBy(desc(syncRuns.startedAt))
+      .limit(limit);
+  }
+
+  async createSyncRun(run: InsertSyncRun): Promise<SyncRun> {
+    const [created] = await db.insert(syncRuns).values(run).returning();
+    return created;
+  }
+
+  async updateSyncRun(id: string, data: Partial<InsertSyncRun>): Promise<SyncRun | undefined> {
+    const [updated] = await db
+      .update(syncRuns)
+      .set(data)
+      .where(eq(syncRuns.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getLeadsBySchoolId(schoolId: string): Promise<Lead[]> {
+    return db.select().from(leads).where(eq(leads.schoolId, schoolId));
+  }
+
+  async createLead(lead: InsertLead): Promise<Lead> {
+    const [created] = await db.insert(leads).values(lead).returning();
+    return created;
+  }
+
+  async upsertLead(lead: InsertLead): Promise<Lead> {
+    const [upserted] = await db
+      .insert(leads)
+      .values(lead)
+      .onConflictDoUpdate({
+        target: [leads.sourceConnectorId, leads.sourceId],
+        set: {
+          payload: lead.payload,
+          schoolId: lead.schoolId,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async getPaymentsBySchoolId(schoolId: string): Promise<Payment[]> {
+    return db.select().from(payments).where(eq(payments.schoolId, schoolId));
+  }
+
+  async createPayment(payment: InsertPayment): Promise<Payment> {
+    const [created] = await db.insert(payments).values(payment).returning();
+    return created;
+  }
+
+  async upsertPayment(payment: InsertPayment): Promise<Payment> {
+    const [upserted] = await db
+      .insert(payments)
+      .values(payment)
+      .onConflictDoUpdate({
+        target: [payments.sourceConnectorId, payments.sourceId],
+        set: {
+          payload: payment.payload,
+          schoolId: payment.schoolId,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async getEnrollmentsBySchoolId(schoolId: string): Promise<Enrollment[]> {
+    return db.select().from(enrollments).where(eq(enrollments.schoolId, schoolId));
+  }
+
+  async createEnrollment(enrollment: InsertEnrollment): Promise<Enrollment> {
+    const [created] = await db.insert(enrollments).values(enrollment).returning();
+    return created;
+  }
+
+  async upsertEnrollment(enrollment: InsertEnrollment): Promise<Enrollment> {
+    const [upserted] = await db
+      .insert(enrollments)
+      .values(enrollment)
+      .onConflictDoUpdate({
+        target: [enrollments.sourceConnectorId, enrollments.sourceId],
+        set: {
+          payload: enrollment.payload,
+          schoolId: enrollment.schoolId,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
   }
 }
 
