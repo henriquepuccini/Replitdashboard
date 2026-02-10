@@ -10,6 +10,9 @@ import {
   jsonb,
   bigint,
   integer,
+  numeric,
+  date,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -497,3 +500,253 @@ export type Payment = typeof payments.$inferSelect;
 
 export type InsertEnrollment = z.infer<typeof insertEnrollmentSchema>;
 export type Enrollment = typeof enrollments.$inferSelect;
+
+export const KPI_CALC_TYPES = ["sql", "js", "materialized"] as const;
+export type KpiCalcType = (typeof KPI_CALC_TYPES)[number];
+
+export const KPI_CALC_RUN_STATUSES = ["pending", "running", "success", "failed"] as const;
+export type KpiCalcRunStatus = (typeof KPI_CALC_RUN_STATUSES)[number];
+
+export const kpiDefinitions = pgTable(
+  "kpi_definitions",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    key: varchar("key", { length: 100 }).notNull().unique(),
+    name: text("name").notNull(),
+    description: text("description"),
+    calcType: varchar("calc_type", { length: 20 }).notNull(),
+    config: jsonb("config").$type<Record<string, unknown>>().default({}),
+    isActive: boolean("is_active").notNull().default(true),
+    ownerId: uuid("owner_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("idx_kpi_definitions_key").on(table.key),
+    index("idx_kpi_definitions_calc_type").on(table.calcType),
+  ]
+);
+
+export const kpiCalcRuns = pgTable(
+  "kpi_calc_runs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    kpiId: uuid("kpi_id")
+      .notNull()
+      .references(() => kpiDefinitions.id, { onDelete: "cascade" }),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    inputs: jsonb("inputs").$type<Record<string, unknown>>(),
+    version: text("version"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_kpi_calc_runs_kpi_id").on(table.kpiId),
+    index("idx_kpi_calc_runs_status").on(table.status),
+  ]
+);
+
+export const kpiValues = pgTable(
+  "kpi_values",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    kpiId: uuid("kpi_id")
+      .notNull()
+      .references(() => kpiDefinitions.id, { onDelete: "cascade" }),
+    schoolId: uuid("school_id").references(() => schools.id, {
+      onDelete: "set null",
+    }),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    value: numeric("value", { precision: 18, scale: 4 }).notNull(),
+    computedAt: timestamp("computed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    calcRunId: uuid("calc_run_id").references(() => kpiCalcRuns.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_kpi_values_kpi_school_period").on(
+      table.kpiId,
+      table.schoolId,
+      sql`${table.periodStart} DESC`
+    ),
+    index("idx_kpi_values_calc_run_id").on(table.calcRunId),
+  ]
+);
+
+export const kpiGoals = pgTable(
+  "kpi_goals",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    kpiId: uuid("kpi_id")
+      .notNull()
+      .references(() => kpiDefinitions.id, { onDelete: "cascade" }),
+    schoolId: uuid("school_id").references(() => schools.id, {
+      onDelete: "set null",
+    }),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    target: numeric("target", { precision: 18, scale: 4 }).notNull(),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_kpi_goals_school_kpi_period").on(
+      table.schoolId,
+      table.kpiId,
+      table.periodStart
+    ),
+    index("idx_kpi_goals_kpi_id").on(table.kpiId),
+  ]
+);
+
+export const calculationAudit = pgTable(
+  "calculation_audit",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    calcRunId: uuid("calc_run_id")
+      .notNull()
+      .references(() => kpiCalcRuns.id, { onDelete: "cascade" }),
+    inputSnapshot: jsonb("input_snapshot").$type<Record<string, unknown>>(),
+    resultSnapshot: jsonb("result_snapshot").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_calculation_audit_calc_run_id").on(table.calcRunId),
+  ]
+);
+
+export const insertKpiDefinitionSchema = createInsertSchema(kpiDefinitions)
+  .omit({
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    key: z
+      .string()
+      .min(1, "KPI key is required")
+      .max(100)
+      .regex(/^[a-z0-9_]+$/, "Key must be lowercase alphanumeric with underscores"),
+    name: z.string().min(1, "KPI name is required"),
+    description: z.string().nullable().optional(),
+    calcType: z.enum(KPI_CALC_TYPES),
+    config: z.record(z.unknown()).optional(),
+    isActive: z.boolean().optional(),
+    ownerId: z.string().uuid("Invalid owner ID").nullable().optional(),
+  });
+
+export const insertKpiCalcRunSchema = createInsertSchema(kpiCalcRuns)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    kpiId: z.string().uuid("Invalid KPI ID"),
+    status: z.enum(KPI_CALC_RUN_STATUSES).default("pending"),
+    inputs: z.record(z.unknown()).nullable().optional(),
+    version: z.string().nullable().optional(),
+    createdBy: z.string().uuid("Invalid user ID").nullable().optional(),
+    startedAt: z.date().optional(),
+    finishedAt: z.date().nullable().optional(),
+  });
+
+export const insertKpiValueSchema = createInsertSchema(kpiValues)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    kpiId: z.string().uuid("Invalid KPI ID"),
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    periodStart: z.string().min(1, "Period start is required"),
+    periodEnd: z.string().min(1, "Period end is required"),
+    value: z
+      .string()
+      .min(1, "Value is required")
+      .refine((v) => !isNaN(Number(v)), { message: "Value must be a valid number" }),
+    computedAt: z.date().optional(),
+    calcRunId: z.string().uuid("Invalid calc run ID").nullable().optional(),
+  });
+
+export const insertKpiGoalSchema = createInsertSchema(kpiGoals)
+  .omit({
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    kpiId: z.string().uuid("Invalid KPI ID"),
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    periodStart: z.string().min(1, "Period start is required"),
+    periodEnd: z.string().min(1, "Period end is required"),
+    target: z
+      .string()
+      .min(1, "Target is required")
+      .refine((v) => !isNaN(Number(v)), { message: "Target must be a valid number" }),
+    createdBy: z.string().uuid("Invalid user ID").nullable().optional(),
+  });
+
+export const insertCalculationAuditSchema = createInsertSchema(calculationAudit)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    calcRunId: z.string().uuid("Invalid calc run ID"),
+    inputSnapshot: z.record(z.unknown()).nullable().optional(),
+    resultSnapshot: z.record(z.unknown()).nullable().optional(),
+  });
+
+export type InsertKpiDefinition = z.infer<typeof insertKpiDefinitionSchema>;
+export type KpiDefinition = typeof kpiDefinitions.$inferSelect;
+
+export type InsertKpiCalcRun = z.infer<typeof insertKpiCalcRunSchema>;
+export type KpiCalcRun = typeof kpiCalcRuns.$inferSelect;
+
+export type InsertKpiValue = z.infer<typeof insertKpiValueSchema>;
+export type KpiValue = typeof kpiValues.$inferSelect;
+
+export type InsertKpiGoal = z.infer<typeof insertKpiGoalSchema>;
+export type KpiGoal = typeof kpiGoals.$inferSelect;
+
+export type InsertCalculationAudit = z.infer<typeof insertCalculationAuditSchema>;
+export type CalculationAudit = typeof calculationAudit.$inferSelect;

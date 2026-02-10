@@ -25,6 +25,7 @@ The database includes tables for:
 -   **Auth & User Management**: `users`, `schools`, `user_schools`, `auth_user_sync_logs`. Users have roles (admin, director, seller, exec, finance, ops) and are linked to schools.
 -   **Connector & Sync Management**: `connectors`, `connector_mappings`, `raw_ingest_files`, `sync_runs`. These manage data integration from external sources.
 -   **Normalized Data**: `leads`, `payments`, `enrollments`. These tables store processed data from connectors, associated with specific schools.
+-   **KPI & Goals**: `kpi_definitions`, `kpi_goals`, `kpi_values`, `kpi_calc_runs`, `calculation_audit`. KPI definitions use a unique `key` (e.g., `new_enrollments`) with calc types (sql, js, materialized). Goals and values are segmented by school (nullable = network-wide). Values use NUMERIC(18,4) for monetary precision. Calc runs track version for reproducibility, with full input/result snapshots in the audit table.
 
 ### Data Integration and Sync
 A Connector Sync Engine facilitates data ingestion from CRM, financial, and academic systems. It includes:
