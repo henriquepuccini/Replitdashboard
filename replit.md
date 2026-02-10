@@ -4,6 +4,17 @@
 Multi-level commercial performance dashboard for a network of six schools. Consolidates CRM, financial, and academic data to present commercial and financial KPIs segmented by seller, school, and network with role-based access control.
 
 ## Recent Changes
+- **2026-02-10**: Connector Sync Engine
+  - Created sync engine module (server/connectors/sync-engine.ts) with runConnector orchestration
+  - API client (server/connectors/api-client.ts) with OAuth token refresh, exponential backoff retry, pagination (offset/cursor/page/none)
+  - Transform engine (server/connectors/transforms.ts) with 12 transform ops: cast_string, cast_number, cast_int, cast_boolean, date_parse, lowercase, uppercase, trim, default_value, concat, map_values, regex_extract, split, template
+  - Nested JSON path traversal for source field extraction (dot-notation + array indexes)
+  - Schema drift detection: logs unmapped fields in sync_runs.error
+  - Raw API response metadata stored in raw_ingest_files table per page
+  - Periodic checkpointing: sync_runs updated after each page with current counts/errors
+  - POST /api/connectors/:connectorId/run endpoint (admin/ops only) with options: runId, batchSize, maxPages, dryRun
+  - Connector type determines target table: crm→leads, finance→payments, academic→enrollments
+  - Connector config supports: baseUrl, apiKey, oauth (with refresh), headers, dataPath, paginationType, pageSize, sourceIdField, schoolId
 - **2026-02-10**: Connectors RLS Policies & RBAC Routes
   - RLS enabled on connectors, connector_mappings, sync_runs, raw_ingest_files, leads, payments, enrollments
   - Helper functions: is_connector_owner, is_ops, is_exec, get_user_school_ids, is_user_in_school
@@ -116,6 +127,7 @@ Valid roles: `admin`, `director`, `seller`, `exec`, `finance`, `ops`
 - `GET /api/auth/dev-users` — Dev-mode user list (id, email, fullName, role)
 - `POST /api/auth/sync` — Supabase Auth webhook receiver (service role auth, not session auth)
 - `GET /api/auth/sync-logs/:userId` — Admin-only audit trail viewer
+- `POST /api/connectors/:connectorId/run` — Admin/ops only: trigger sync with options (runId, batchSize, maxPages, dryRun)
 - `GET/POST /api/connectors`, `GET/PATCH/DELETE /api/connectors/:id` — Admin creates; owner/admin/ops can read
 - `GET/POST /api/connectors/:connectorId/mappings` — Owner or admin only
 - `PATCH/DELETE /api/connector-mappings/:id` — Owner or admin only

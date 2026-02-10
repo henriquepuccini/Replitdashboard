@@ -27,6 +27,7 @@ import {
   loadCurrentUser,
   filterUserUpdateFields,
 } from "./rbac";
+import { runConnector } from "./connectors/sync-engine";
 
 function handleZodError(error: unknown) {
   if (error instanceof ZodError) {
@@ -607,6 +608,39 @@ export async function registerRoutes(
         res.status(204).send();
       } catch (error) {
         res.status(500).json({ message: "Failed to delete connector" });
+      }
+    }
+  );
+
+  // =========================================================================
+  // RUN CONNECTOR SYNC
+  // =========================================================================
+
+  app.post(
+    "/api/connectors/:connectorId/run",
+    requireAuth,
+    requireRole("admin", "ops"),
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        const connector = await storage.getConnector(connectorId);
+        if (!connector) {
+          return res.status(404).json({ message: "Connector not found" });
+        }
+
+        const options = {
+          runId: req.body.runId as string | undefined,
+          batchSize: req.body.batchSize as number | undefined,
+          maxPages: req.body.maxPages as number | undefined,
+          dryRun: req.body.dryRun as boolean | undefined,
+        };
+
+        const result = await runConnector(connectorId, options);
+        res.json(result);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Sync failed";
+        res.status(500).json({ message });
       }
     }
   );
