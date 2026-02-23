@@ -25,6 +25,8 @@ import {
   Sun,
   BarChart3,
   Target,
+  Kanban,
+  List,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 
@@ -83,6 +85,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   const isDirector = user?.role === "director";
   const isExec = user?.role === "exec";
+  const isSeller = user?.role === "seller";
 
   const menuItems = [
     {
@@ -90,6 +93,18 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       url: "/",
       icon: LayoutDashboard,
       visible: true,
+    },
+    {
+      title: "Pipeline",
+      url: "/pipeline",
+      icon: Kanban,
+      visible: isAdmin || isOps || isExec || isDirector || isSeller,
+    },
+    {
+      title: "Leads",
+      url: "/leads",
+      icon: List,
+      visible: isAdmin || isOps || isExec || isDirector || isSeller,
     },
     {
       title: "KPIs",

@@ -15,6 +15,8 @@ import IntegrationDetailPage from "@/pages/integration-detail";
 import KpiLibraryPage from "@/pages/kpi-library";
 import KpiDetailPage from "@/pages/kpi-detail";
 import KpiGoalsPage from "@/pages/kpi-goals";
+import PipelinePage from "@/pages/pipeline";
+import LeadsPage from "@/pages/leads";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -52,6 +54,22 @@ function Router() {
         <ProtectedRoute allowedRoles={["admin", "director"]}>
           <AppLayout>
             <KpiGoalsPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/pipeline">
+        <ProtectedRoute allowedRoles={["admin", "ops", "exec", "director", "seller"]}>
+          <AppLayout>
+            <PipelinePage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/leads">
+        <ProtectedRoute allowedRoles={["admin", "ops", "exec", "director", "seller"]}>
+          <AppLayout>
+            <LeadsPage />
           </AppLayout>
         </ProtectedRoute>
       </Route>

@@ -878,17 +878,105 @@ export async function registerRoutes(
       if (!canViewNormalizedData(req)) {
         return res.status(403).json({ message: "Insufficient permissions" });
       }
-      const allLeads = await storage.getLeads();
-      if (isAdmin(req) || isExec(req) || isOps(req)) {
-        return res.json(allLeads);
+      let allLeads = await storage.getLeads();
+
+      const userRole = req.currentUser!.role;
+      if (userRole === "seller") {
+        allLeads = allLeads.filter((l) => l.sellerId === req.currentUser!.id);
+      } else if (!(isAdmin(req) || isExec(req) || isOps(req))) {
+        const schoolIds = getUserSchoolIds(req);
+        allLeads = allLeads.filter(
+          (l) => l.schoolId && schoolIds.includes(l.schoolId)
+        );
       }
-      const schoolIds = getUserSchoolIds(req);
-      const scoped = allLeads.filter(
-        (l) => l.schoolId && schoolIds.includes(l.schoolId)
-      );
-      res.json(scoped);
+
+      const { stage, status, seller_id, school_id, source, search, period_start, period_end } = req.query;
+      if (stage) allLeads = allLeads.filter((l) => l.stage === stage);
+      if (status) allLeads = allLeads.filter((l) => l.status === status);
+      if (seller_id) allLeads = allLeads.filter((l) => l.sellerId === seller_id);
+      if (school_id) allLeads = allLeads.filter((l) => l.schoolId === school_id);
+      if (source) allLeads = allLeads.filter((l) => l.sourceConnectorId === source);
+      if (period_start) {
+        const start = new Date(period_start as string);
+        allLeads = allLeads.filter((l) => new Date(l.createdAt) >= start);
+      }
+      if (period_end) {
+        const end = new Date(period_end as string);
+        allLeads = allLeads.filter((l) => new Date(l.createdAt) <= end);
+      }
+      if (search) {
+        const q = (search as string).toLowerCase();
+        allLeads = allLeads.filter((l) => {
+          const p = l.payload as Record<string, unknown>;
+          const name = String(p.name || p.nome || "").toLowerCase();
+          const email = String(p.email || "").toLowerCase();
+          const phone = String(p.phone || p.telefone || "").toLowerCase();
+          return name.includes(q) || email.includes(q) || phone.includes(q) || l.sourceId.toLowerCase().includes(q);
+        });
+      }
+
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const total = allLeads.length;
+      const paginated = allLeads.slice((page - 1) * limit, page * limit);
+
+      res.json({ data: paginated, total, page, limit, totalPages: Math.ceil(total / limit) });
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch leads" });
+    }
+  });
+
+  app.get("/api/leads/:id", requireAuth, async (req, res) => {
+    try {
+      if (!canViewNormalizedData(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const leadId = req.params.id as string;
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      const userRole = req.currentUser!.role;
+      if (userRole === "seller" && lead.sellerId !== req.currentUser!.id) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+      if (!["admin", "exec", "ops"].includes(userRole)) {
+        const schoolIds = getUserSchoolIds(req);
+        if (lead.schoolId && !schoolIds.includes(lead.schoolId)) {
+          return res.status(403).json({ message: "Access denied" });
+        }
+      }
+
+      res.json(lead);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch lead" });
+    }
+  });
+
+  app.patch("/api/leads/:id", requireAuth, async (req, res) => {
+    try {
+      const leadId = req.params.id as string;
+      const userRole = req.currentUser!.role;
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      if (userRole === "seller") {
+        if (lead.sellerId !== req.currentUser!.id) {
+          return res.status(403).json({ message: "Access denied" });
+        }
+      } else if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const allowedFields = ["stage", "status", "lastInteraction", "sellerId", "schoolId", "payload"];
+      const updateData: Record<string, unknown> = {};
+      for (const field of allowedFields) {
+        if (field in req.body) updateData[field] = req.body[field];
+      }
+
+      const updated = await storage.updateLead(leadId, updateData as any);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update lead" });
     }
   });
 

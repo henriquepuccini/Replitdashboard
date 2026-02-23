@@ -107,8 +107,11 @@ export interface IStorage {
   updateSyncRun(id: string, data: Partial<InsertSyncRun>): Promise<SyncRun | undefined>;
 
   getLeads(): Promise<Lead[]>;
+  getLead(id: string): Promise<Lead | undefined>;
   getLeadsBySchoolId(schoolId: string): Promise<Lead[]>;
+  getLeadsBySellerId(sellerId: string): Promise<Lead[]>;
   createLead(lead: InsertLead): Promise<Lead>;
+  updateLead(id: string, data: Partial<InsertLead>): Promise<Lead | undefined>;
   upsertLead(lead: InsertLead): Promise<Lead>;
 
   getPayments(): Promise<Payment[]>;
@@ -436,16 +439,34 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getLeads(): Promise<Lead[]> {
-    return db.select().from(leads);
+    return db.select().from(leads).orderBy(desc(leads.createdAt));
+  }
+
+  async getLead(id: string): Promise<Lead | undefined> {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, id));
+    return lead;
   }
 
   async getLeadsBySchoolId(schoolId: string): Promise<Lead[]> {
-    return db.select().from(leads).where(eq(leads.schoolId, schoolId));
+    return db.select().from(leads).where(eq(leads.schoolId, schoolId)).orderBy(desc(leads.createdAt));
+  }
+
+  async getLeadsBySellerId(sellerId: string): Promise<Lead[]> {
+    return db.select().from(leads).where(eq(leads.sellerId, sellerId)).orderBy(desc(leads.createdAt));
   }
 
   async createLead(lead: InsertLead): Promise<Lead> {
     const [created] = await db.insert(leads).values(lead).returning();
     return created;
+  }
+
+  async updateLead(id: string, data: Partial<InsertLead>): Promise<Lead | undefined> {
+    const [updated] = await db
+      .update(leads)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(leads.id, id))
+      .returning();
+    return updated;
   }
 
   async upsertLead(lead: InsertLead): Promise<Lead> {
