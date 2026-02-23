@@ -45,6 +45,15 @@ A Connector Sync Engine facilitates data ingestion from CRM, financial, and acad
 -   **Role-Based Access Control (RBAC)**: Implemented at the database level (RLS) and application level, ensuring data visibility is restricted based on user roles and school affiliations.
 -   **Connector Management UI**: Provides interfaces for configuring connectors, mapping source fields to target fields, and monitoring sync runs.
 
+### Operational Dashboard (Pipeline & Leads)
+The frontend includes pipeline and lead management views:
+-   **Pipeline Kanban** (`/pipeline`): Drag-and-drop board using `@hello-pangea/dnd` showing leads organized by stage columns (Novo, Contatado, Qualificado, Proposta, Negociação, Ganho). Supports optimistic updates with rollback.
+-   **Leads List** (`/leads`): Paginated table view with filters (search, stage, school, date range). Click any row to open detail drawer.
+-   **Lead Detail Sheet**: Side drawer showing contact info, action buttons (call/email links), stage/status change selects, and raw payload viewer.
+-   **Hooks**: `useLeads(filters)`, `useLead(id)`, `useUpdateLead()` with centralized optimistic updates and cache invalidation.
+-   **RBAC**: Admin/ops can edit any lead; sellers can only edit their assigned leads; director/exec/finance are read-only. `canEditLead()` utility enforces this consistently.
+-   **API**: `GET /api/leads` (filtered, paginated), `GET /api/leads/:id`, `PATCH /api/leads/:id` with server-side RBAC enforcement.
+
 ### Authentication
 Session-based authentication is used, with secure httpOnly cookies. It supports email-only login for development, and integrates with Supabase Auth via a webhook or direct DB trigger for user synchronization. User roles determine access to different parts of the application and data.
 
