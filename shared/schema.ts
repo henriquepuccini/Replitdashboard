@@ -308,10 +308,16 @@ export const leads = pgTable(
       .notNull()
       .references(() => connectors.id, { onDelete: "cascade" }),
     sourceId: text("source_id").notNull(),
-    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    sellerId: uuid("seller_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     schoolId: uuid("school_id").references(() => schools.id, {
       onDelete: "set null",
     }),
+    stage: varchar("stage", { length: 50 }).notNull().default("new"),
+    status: varchar("status", { length: 50 }).notNull().default("open"),
+    lastInteraction: timestamp("last_interaction", { withTimezone: true }),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -324,6 +330,17 @@ export const leads = pgTable(
     index("idx_leads_created_at").on(table.createdAt),
     index("idx_leads_source_id").on(table.sourceId),
     index("idx_leads_source_connector_id").on(table.sourceConnectorId),
+    index("idx_leads_seller_school_stage").on(
+      table.sellerId,
+      table.schoolId,
+      table.stage
+    ),
+    index("idx_leads_school_created_desc").on(table.schoolId, table.createdAt),
+    index("idx_leads_stage_last_interaction").on(
+      table.stage,
+      table.lastInteraction
+    ),
+    index("idx_leads_seller_id").on(table.sellerId),
   ]
 );
 
@@ -450,8 +467,12 @@ export const insertLeadSchema = createInsertSchema(leads)
   .extend({
     sourceConnectorId: z.string().uuid("Invalid connector ID"),
     sourceId: z.string().min(1, "Source ID is required"),
-    payload: z.record(z.unknown()),
+    sellerId: z.string().uuid("Invalid seller ID").nullable().optional(),
     schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    stage: z.string().max(50).optional(),
+    status: z.string().max(50).optional(),
+    lastInteraction: z.coerce.date().nullable().optional(),
+    payload: z.record(z.unknown()),
   });
 
 export const insertPaymentSchema = createInsertSchema(payments)

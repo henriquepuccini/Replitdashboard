@@ -4,6 +4,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
+import { pool } from "./db";
 
 const app = express();
 const httpServer = createServer(app);
@@ -127,6 +128,17 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+
+      const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+      setInterval(async () => {
+        try {
+          await pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY leads_pipeline_agg");
+          log("Materialized view leads_pipeline_agg refreshed", "scheduler");
+        } catch (err) {
+          console.error("Failed to refresh leads_pipeline_agg:", err);
+        }
+      }, REFRESH_INTERVAL_MS);
+      log(`Pipeline aggregation refresh scheduled every ${REFRESH_INTERVAL_MS / 1000}s`, "scheduler");
     },
   );
 })();

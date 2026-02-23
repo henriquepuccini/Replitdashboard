@@ -1238,5 +1238,49 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Pipeline Materialized View ─────────────────────────────────────
+  app.post("/api/pipeline/refresh", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const { pool } = await import("./db");
+      await pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY leads_pipeline_agg");
+      res.json({ success: true, refreshedAt: new Date().toISOString() });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Refresh failed";
+      res.status(500).json({ success: false, message });
+    }
+  });
+
+  app.get("/api/pipeline/agg", requireAuth, async (req, res) => {
+    try {
+      if (!hasElevatedRole(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const { pool } = await import("./db");
+      const schoolId = req.query.school_id as string | undefined;
+      const sellerId = req.query.seller_id as string | undefined;
+
+      let query = "SELECT school_id, seller_id, stage, lead_count FROM leads_pipeline_agg WHERE 1=1";
+      const params: string[] = [];
+      if (schoolId) {
+        params.push(schoolId);
+        query += ` AND school_id = $${params.length}`;
+      }
+      if (sellerId) {
+        params.push(sellerId);
+        query += ` AND seller_id = $${params.length}`;
+      }
+      query += " ORDER BY school_id, seller_id, stage";
+
+      const result = await pool.query(query, params);
+      res.json(result.rows);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Query failed";
+      res.status(500).json({ success: false, message });
+    }
+  });
+
   return httpServer;
 }
