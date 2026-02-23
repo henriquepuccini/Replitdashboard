@@ -344,6 +344,32 @@ export const leads = pgTable(
   ]
 );
 
+export const leadsHistory = pgTable(
+  "leads_history",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    leadId: uuid("lead_id").notNull(),
+    changedBy: uuid("changed_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    changeType: varchar("change_type", { length: 10 }).notNull(),
+    oldData: jsonb("old_data").$type<Record<string, unknown>>(),
+    newData: jsonb("new_data").$type<Record<string, unknown>>(),
+    changedFields: text("changed_fields").array(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_leads_history_lead_id").on(table.leadId),
+    index("idx_leads_history_changed_by").on(table.changedBy),
+    index("idx_leads_history_created_at").on(table.createdAt),
+    index("idx_leads_history_change_type").on(table.changeType),
+  ]
+);
+
 export const payments = pgTable(
   "payments",
   {
@@ -515,6 +541,8 @@ export type SyncRun = typeof syncRuns.$inferSelect;
 
 export type InsertLead = z.infer<typeof insertLeadSchema>;
 export type Lead = typeof leads.$inferSelect;
+
+export type LeadHistory = typeof leadsHistory.$inferSelect;
 
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
