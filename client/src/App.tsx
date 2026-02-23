@@ -12,6 +12,9 @@ import DashboardPage from "@/pages/dashboard";
 import AdminUsersPage from "@/pages/admin-users";
 import IntegrationsPage from "@/pages/integrations";
 import IntegrationDetailPage from "@/pages/integration-detail";
+import KpiLibraryPage from "@/pages/kpi-library";
+import KpiDetailPage from "@/pages/kpi-detail";
+import KpiGoalsPage from "@/pages/kpi-goals";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -25,6 +28,30 @@ function Router() {
         <ProtectedRoute>
           <AppLayout>
             <DashboardPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/kpis">
+        <ProtectedRoute allowedRoles={["admin", "ops", "exec", "director"]}>
+          <AppLayout>
+            <KpiLibraryPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/kpis/:id">
+        <ProtectedRoute allowedRoles={["admin", "ops", "exec", "director"]}>
+          <AppLayout>
+            <KpiDetailPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/goals">
+        <ProtectedRoute allowedRoles={["admin", "director"]}>
+          <AppLayout>
+            <KpiGoalsPage />
           </AppLayout>
         </ProtectedRoute>
       </Route>

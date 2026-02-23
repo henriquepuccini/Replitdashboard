@@ -1,9 +1,62 @@
 import { useAuth } from "@/hooks/use-auth";
+import { useKpis, useKpiValues } from "@/hooks/use-kpis";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { BarChart3, TrendingUp, School, Users } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { KpiCard, SparklineChart } from "@/components/kpi-widgets";
+import { BarChart3 } from "lucide-react";
+import type { KpiDefinition, KpiValue } from "@shared/schema";
+
+const KPI_ICONS: Record<string, string> = {
+  new_enrollments: "users",
+  total_revenue: "trending-up",
+  new_leads: "user-plus",
+  lead_conversion_rate: "bar-chart",
+  avg_ticket: "dollar-sign",
+};
+
+const KPI_FORMAT: Record<string, "number" | "currency" | "percent"> = {
+  total_revenue: "currency",
+  avg_ticket: "currency",
+  lead_conversion_rate: "percent",
+};
+
+function DashboardKpiCard({ kpi }: { kpi: KpiDefinition }) {
+  const { data: values, isLoading } = useKpiValues(kpi.id, { limit: 12 });
+  const [, setLocation] = useLocation();
+
+  const latest = values?.[0];
+  const previous = values?.[1];
+  const format = KPI_FORMAT[kpi.key] || "number";
+
+  if (isLoading) {
+    return <Skeleton className="h-[140px]" />;
+  }
+
+  return (
+    <div className="space-y-1">
+      <KpiCard
+        title={kpi.name}
+        value={latest?.value ?? null}
+        previousValue={previous?.value ?? null}
+        format={format}
+        lastComputedAt={latest?.computedAt ? String(latest.computedAt) : null}
+        onClick={() => setLocation(`/kpis/${kpi.id}`)}
+      />
+      {values && values.length > 1 && (
+        <div className="px-2">
+          <SparklineChart values={values} height={36} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const { data: kpis, isLoading } = useKpis();
+
+  const activeKpis = (kpis || []).filter((k) => k.isActive);
 
   return (
     <div className="space-y-6">
@@ -19,98 +72,48 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {isLoading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} className="h-[140px]" />
+          ))}
+        </div>
+      ) : activeKpis.length === 0 ? (
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Matrículas
-            </CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <p
-              className="text-2xl font-bold"
-              data-testid="text-kpi-enrollments"
-            >
-              —
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Dados serão carregados após integração CRM
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <BarChart3 className="h-12 w-12 text-muted-foreground opacity-30 mb-3" />
+            <p className="text-sm text-muted-foreground">
+              Nenhum KPI configurado ainda. Configure indicadores na Biblioteca de KPIs.
             </p>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Receita
-            </CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <p
-              className="text-2xl font-bold"
-              data-testid="text-kpi-revenue"
-            >
-              —
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Dados serão carregados após integração financeira
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Escolas
-            </CardTitle>
-            <School className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <p
-              className="text-2xl font-bold"
-              data-testid="text-kpi-schools"
-            >
-              6
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Unidades ativas na rede
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Conversão
-            </CardTitle>
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <p
-              className="text-2xl font-bold"
-              data-testid="text-kpi-conversion"
-            >
-              —
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Taxa de conversão de leads
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {activeKpis.map((kpi) => (
+            <DashboardKpiCard key={kpi.id} kpi={kpi} />
+          ))}
+        </div>
+      )}
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Performance Comercial</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-center h-48 text-muted-foreground">
-            <div className="text-center space-y-2">
-              <BarChart3 className="h-12 w-12 mx-auto opacity-30" />
-              <p className="text-sm">
-                Os gráficos de performance serão exibidos após a integração com os dados do CRM
-              </p>
+          {activeKpis.length === 0 ? (
+            <div className="flex items-center justify-center h-48 text-muted-foreground">
+              <div className="text-center space-y-2">
+                <BarChart3 className="h-12 w-12 mx-auto opacity-30" />
+                <p className="text-sm">
+                  Os gráficos de performance serão exibidos após configurar os KPIs
+                </p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="text-sm text-muted-foreground text-center py-8">
+              Clique em um KPI acima para ver detalhes e gráficos
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

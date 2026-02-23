@@ -23,6 +23,8 @@ import {
   LogOut,
   Moon,
   Sun,
+  BarChart3,
+  Target,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 
@@ -79,12 +81,27 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const isAdmin = user?.role === "admin";
   const isOps = user?.role === "ops";
 
+  const isDirector = user?.role === "director";
+  const isExec = user?.role === "exec";
+
   const menuItems = [
     {
       title: "Dashboard",
       url: "/",
       icon: LayoutDashboard,
       visible: true,
+    },
+    {
+      title: "KPIs",
+      url: "/kpis",
+      icon: BarChart3,
+      visible: isAdmin || isOps || isExec || isDirector,
+    },
+    {
+      title: "Metas",
+      url: "/goals",
+      icon: Target,
+      visible: isAdmin || isDirector,
     },
     {
       title: "Integrações",
