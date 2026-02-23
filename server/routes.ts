@@ -28,6 +28,16 @@ import {
   filterUserUpdateFields,
 } from "./rbac";
 import { runConnector } from "./connectors/sync-engine";
+import {
+  computeKpi,
+  computeKpiForAllSchools,
+  computeRollup,
+} from "./kpis/compute";
+import { listSnippets } from "./kpis/js-snippets";
+import {
+  insertKpiDefinitionSchema,
+  insertKpiGoalSchema,
+} from "@shared/schema";
 
 function handleZodError(error: unknown) {
   if (error instanceof ZodError) {
@@ -917,6 +927,314 @@ export async function registerRoutes(
       res.json(scoped);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch enrollments" });
+    }
+  });
+
+  // =========================================================================
+  // KPI DEFINITIONS
+  // =========================================================================
+
+  app.get("/api/kpis", requireAuth, async (req, res) => {
+    try {
+      if (!hasElevatedRole(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const activeOnly = req.query.active === "true";
+      const definitions = await storage.getKpiDefinitions(activeOnly);
+      res.json(definitions);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch KPI definitions" });
+    }
+  });
+
+  app.get("/api/kpis/:id", requireAuth, async (req, res) => {
+    try {
+      if (!hasElevatedRole(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const def = await storage.getKpiDefinition(req.params.id as string);
+      if (!def) {
+        return res.status(404).json({ message: "KPI definition not found" });
+      }
+      res.json(def);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch KPI definition" });
+    }
+  });
+
+  app.post("/api/kpis", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const validated = insertKpiDefinitionSchema.parse(req.body);
+      const created = await storage.createKpiDefinition(validated);
+      res.status(201).json(created);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        return res.status(400).json({ message: handleZodError(error) });
+      }
+      res.status(500).json({ message: "Failed to create KPI definition" });
+    }
+  });
+
+  app.patch("/api/kpis/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    try {
+      const updated = await storage.updateKpiDefinition(req.params.id as string, req.body);
+      if (!updated) {
+        return res.status(404).json({ message: "KPI definition not found" });
+      }
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update KPI definition" });
+    }
+  });
+
+  // =========================================================================
+  // KPI GOALS
+  // =========================================================================
+
+  app.get("/api/kpis/:kpiId/goals", requireAuth, async (req, res) => {
+    try {
+      if (!hasElevatedRole(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const schoolId = req.query.school_id as string | undefined;
+      const goals = await storage.getKpiGoals(
+        req.params.kpiId as string,
+        schoolId === "null" ? null : schoolId
+      );
+      res.json(goals);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch KPI goals" });
+    }
+  });
+
+  app.post("/api/kpis/:kpiId/goals", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isDirectorOfSchool(req, req.body.schoolId)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const validated = insertKpiGoalSchema.parse({
+        ...req.body,
+        kpiId: req.params.kpiId,
+        createdBy: req.currentUser?.id,
+      });
+      const created = await storage.createKpiGoal(validated);
+      res.status(201).json(created);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        return res.status(400).json({ message: handleZodError(error) });
+      }
+      res.status(500).json({ message: "Failed to create KPI goal" });
+    }
+  });
+
+  app.patch("/api/kpis/:kpiId/goals/:goalId", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isDirectorOfSchool(req, req.body.schoolId)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const updated = await storage.updateKpiGoal(req.params.goalId as string, req.body);
+      if (!updated) {
+        return res.status(404).json({ message: "KPI goal not found" });
+      }
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update KPI goal" });
+    }
+  });
+
+  app.delete("/api/kpis/:kpiId/goals/:goalId", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const deleted = await storage.deleteKpiGoal(req.params.goalId as string);
+      if (!deleted) {
+        return res.status(404).json({ message: "KPI goal not found" });
+      }
+      res.json({ message: "Goal deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete KPI goal" });
+    }
+  });
+
+  // =========================================================================
+  // KPI VALUES (read-only for users)
+  // =========================================================================
+
+  app.get("/api/kpis/:kpiId/values", requireAuth, async (req, res) => {
+    try {
+      if (!hasElevatedRole(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const schoolId = req.query.school_id as string | undefined;
+      const limit = parseInt(req.query.limit as string) || 100;
+      const values = await storage.getKpiValues(
+        req.params.kpiId as string,
+        schoolId === "null" ? null : schoolId,
+        limit
+      );
+      res.json(values);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch KPI values" });
+    }
+  });
+
+  // =========================================================================
+  // KPI CALC RUNS (admin/ops only)
+  // =========================================================================
+
+  app.get("/api/kpis/:kpiId/calc-runs", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const limit = parseInt(req.query.limit as string) || 50;
+      const runs = await storage.getKpiCalcRunsByKpiId(req.params.kpiId as string, limit);
+      res.json(runs);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch calc runs" });
+    }
+  });
+
+  app.get("/api/kpi-calc-runs/:runId/audit", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      const audits = await storage.getCalculationAuditByRunId(req.params.runId as string);
+      res.json(audits);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch audit records" });
+    }
+  });
+
+  // =========================================================================
+  // KPI COMPUTE ENDPOINTS (admin/ops only)
+  // =========================================================================
+
+  app.get("/api/kpi-snippets", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+      res.json(listSnippets());
+    } catch (error) {
+      res.status(500).json({ message: "Failed to list snippets" });
+    }
+  });
+
+  app.post("/api/kpis/:id/compute", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const { period_start, period_end, school_id, version } = req.body;
+      if (!period_start || !period_end) {
+        return res.status(400).json({ message: "period_start and period_end are required" });
+      }
+
+      const result = await computeKpi({
+        kpiId: req.params.id as string,
+        periodStart: period_start,
+        periodEnd: period_end,
+        schoolId: school_id || null,
+        userId: req.currentUser?.id || null,
+        version,
+      });
+
+      res.json({
+        success: true,
+        calcRunId: result.calcRun.id,
+        kpiValueId: result.kpiValue.id,
+        computedValue: result.computedValue,
+        kpiKey: result.definition.key,
+        period: { start: period_start, end: period_end },
+        schoolId: school_id || null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Computation failed";
+      const status = message.includes("concorrente") ? 409 : 500;
+      res.status(status).json({ success: false, message });
+    }
+  });
+
+  app.post("/api/kpis/:id/compute-all", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const { period_start, period_end, version, concurrency } = req.body;
+      if (!period_start || !period_end) {
+        return res.status(400).json({ message: "period_start and period_end are required" });
+      }
+
+      const result = await computeKpiForAllSchools(
+        req.params.id as string,
+        period_start,
+        period_end,
+        req.currentUser?.id || null,
+        version,
+        concurrency || 3
+      );
+
+      const successCount = result.results.filter((r) => r.success).length;
+      const failCount = result.results.filter((r) => !r.success).length;
+
+      res.json({
+        success: failCount === 0,
+        kpiKey: result.kpiKey,
+        totalSchools: result.results.length,
+        successCount,
+        failCount,
+        results: result.results.map((r) => ({
+          schoolId: r.schoolId,
+          success: r.success,
+          computedValue: r.result?.computedValue,
+          calcRunId: r.result?.calcRun.id,
+          error: r.error,
+        })),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Batch computation failed";
+      res.status(500).json({ success: false, message });
+    }
+  });
+
+  app.post("/api/kpis/:id/compute-rollup", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isOps(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const { period_start, period_end, sub_periods, school_id, aggregation } = req.body;
+      if (!period_start || !period_end || !sub_periods || !Array.isArray(sub_periods)) {
+        return res.status(400).json({
+          message: "period_start, period_end, and sub_periods[] are required",
+        });
+      }
+
+      const result = await computeRollup(
+        req.params.id as string,
+        period_start,
+        period_end,
+        sub_periods,
+        school_id || null,
+        req.currentUser?.id || null,
+        aggregation || "sum"
+      );
+
+      res.json({
+        success: true,
+        calcRunId: result.calcRun.id,
+        computedValue: result.computedValue,
+        kpiKey: result.definition.key,
+        period: { start: period_start, end: period_end },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Rollup computation failed";
+      res.status(500).json({ success: false, message });
     }
   });
 

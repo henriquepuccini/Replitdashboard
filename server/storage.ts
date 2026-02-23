@@ -21,6 +21,16 @@ import {
   type InsertPayment,
   type Enrollment,
   type InsertEnrollment,
+  type KpiDefinition,
+  type InsertKpiDefinition,
+  type KpiCalcRun,
+  type InsertKpiCalcRun,
+  type KpiValue,
+  type InsertKpiValue,
+  type KpiGoal,
+  type InsertKpiGoal,
+  type CalculationAudit,
+  type InsertCalculationAudit,
   users,
   schools,
   userSchools,
@@ -32,9 +42,14 @@ import {
   leads,
   payments,
   enrollments,
+  kpiDefinitions,
+  kpiCalcRuns,
+  kpiValues,
+  kpiGoals,
+  calculationAudit,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, isNull } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -105,6 +120,28 @@ export interface IStorage {
   getEnrollmentsBySchoolId(schoolId: string): Promise<Enrollment[]>;
   createEnrollment(enrollment: InsertEnrollment): Promise<Enrollment>;
   upsertEnrollment(enrollment: InsertEnrollment): Promise<Enrollment>;
+
+  getKpiDefinition(id: string): Promise<KpiDefinition | undefined>;
+  getKpiDefinitionByKey(key: string): Promise<KpiDefinition | undefined>;
+  getKpiDefinitions(activeOnly?: boolean): Promise<KpiDefinition[]>;
+  createKpiDefinition(def: InsertKpiDefinition): Promise<KpiDefinition>;
+  updateKpiDefinition(id: string, data: Partial<InsertKpiDefinition>): Promise<KpiDefinition | undefined>;
+
+  getKpiCalcRun(id: string): Promise<KpiCalcRun | undefined>;
+  getKpiCalcRunsByKpiId(kpiId: string, limit?: number): Promise<KpiCalcRun[]>;
+  createKpiCalcRun(run: InsertKpiCalcRun): Promise<KpiCalcRun>;
+  updateKpiCalcRun(id: string, data: Partial<InsertKpiCalcRun>): Promise<KpiCalcRun | undefined>;
+
+  getKpiValues(kpiId: string, schoolId?: string | null, limit?: number): Promise<KpiValue[]>;
+  createKpiValue(value: InsertKpiValue): Promise<KpiValue>;
+
+  getKpiGoals(kpiId: string, schoolId?: string | null): Promise<KpiGoal[]>;
+  createKpiGoal(goal: InsertKpiGoal): Promise<KpiGoal>;
+  updateKpiGoal(id: string, data: Partial<InsertKpiGoal>): Promise<KpiGoal | undefined>;
+  deleteKpiGoal(id: string): Promise<boolean>;
+
+  createCalculationAudit(audit: InsertCalculationAudit): Promise<CalculationAudit>;
+  getCalculationAuditByRunId(calcRunId: string): Promise<CalculationAudit[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -483,6 +520,130 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return upserted;
+  }
+  async getKpiDefinition(id: string): Promise<KpiDefinition | undefined> {
+    const [def] = await db.select().from(kpiDefinitions).where(eq(kpiDefinitions.id, id));
+    return def;
+  }
+
+  async getKpiDefinitionByKey(key: string): Promise<KpiDefinition | undefined> {
+    const [def] = await db.select().from(kpiDefinitions).where(eq(kpiDefinitions.key, key));
+    return def;
+  }
+
+  async getKpiDefinitions(activeOnly: boolean = false): Promise<KpiDefinition[]> {
+    if (activeOnly) {
+      return db.select().from(kpiDefinitions).where(eq(kpiDefinitions.isActive, true));
+    }
+    return db.select().from(kpiDefinitions);
+  }
+
+  async createKpiDefinition(def: InsertKpiDefinition): Promise<KpiDefinition> {
+    const [created] = await db.insert(kpiDefinitions).values(def).returning();
+    return created;
+  }
+
+  async updateKpiDefinition(id: string, data: Partial<InsertKpiDefinition>): Promise<KpiDefinition | undefined> {
+    const [updated] = await db
+      .update(kpiDefinitions)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(kpiDefinitions.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getKpiCalcRun(id: string): Promise<KpiCalcRun | undefined> {
+    const [run] = await db.select().from(kpiCalcRuns).where(eq(kpiCalcRuns.id, id));
+    return run;
+  }
+
+  async getKpiCalcRunsByKpiId(kpiId: string, limit: number = 50): Promise<KpiCalcRun[]> {
+    return db
+      .select()
+      .from(kpiCalcRuns)
+      .where(eq(kpiCalcRuns.kpiId, kpiId))
+      .orderBy(desc(kpiCalcRuns.startedAt))
+      .limit(limit);
+  }
+
+  async createKpiCalcRun(run: InsertKpiCalcRun): Promise<KpiCalcRun> {
+    const [created] = await db.insert(kpiCalcRuns).values(run).returning();
+    return created;
+  }
+
+  async updateKpiCalcRun(id: string, data: Partial<InsertKpiCalcRun>): Promise<KpiCalcRun | undefined> {
+    const [updated] = await db
+      .update(kpiCalcRuns)
+      .set(data)
+      .where(eq(kpiCalcRuns.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getKpiValues(kpiId: string, schoolId?: string | null, limit: number = 100): Promise<KpiValue[]> {
+    const conditions = [eq(kpiValues.kpiId, kpiId)];
+    if (schoolId === null) {
+      conditions.push(isNull(kpiValues.schoolId));
+    } else if (schoolId) {
+      conditions.push(eq(kpiValues.schoolId, schoolId));
+    }
+    return db
+      .select()
+      .from(kpiValues)
+      .where(and(...conditions))
+      .orderBy(desc(kpiValues.periodStart))
+      .limit(limit);
+  }
+
+  async createKpiValue(value: InsertKpiValue): Promise<KpiValue> {
+    const [created] = await db.insert(kpiValues).values(value).returning();
+    return created;
+  }
+
+  async getKpiGoals(kpiId: string, schoolId?: string | null): Promise<KpiGoal[]> {
+    const conditions = [eq(kpiGoals.kpiId, kpiId)];
+    if (schoolId === null) {
+      conditions.push(isNull(kpiGoals.schoolId));
+    } else if (schoolId) {
+      conditions.push(eq(kpiGoals.schoolId, schoolId));
+    }
+    return db
+      .select()
+      .from(kpiGoals)
+      .where(and(...conditions))
+      .orderBy(desc(kpiGoals.periodStart));
+  }
+
+  async createKpiGoal(goal: InsertKpiGoal): Promise<KpiGoal> {
+    const [created] = await db.insert(kpiGoals).values(goal).returning();
+    return created;
+  }
+
+  async updateKpiGoal(id: string, data: Partial<InsertKpiGoal>): Promise<KpiGoal | undefined> {
+    const [updated] = await db
+      .update(kpiGoals)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(kpiGoals.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteKpiGoal(id: string): Promise<boolean> {
+    const result = await db.delete(kpiGoals).where(eq(kpiGoals.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async createCalculationAudit(audit: InsertCalculationAudit): Promise<CalculationAudit> {
+    const [created] = await db.insert(calculationAudit).values(audit).returning();
+    return created;
+  }
+
+  async getCalculationAuditByRunId(calcRunId: string): Promise<CalculationAudit[]> {
+    return db
+      .select()
+      .from(calculationAudit)
+      .where(eq(calculationAudit.calcRunId, calcRunId))
+      .orderBy(desc(calculationAudit.createdAt));
   }
 }
 

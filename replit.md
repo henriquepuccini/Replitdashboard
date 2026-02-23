@@ -27,6 +27,16 @@ The database includes tables for:
 -   **Normalized Data**: `leads`, `payments`, `enrollments`. These tables store processed data from connectors, associated with specific schools.
 -   **KPI & Goals**: `kpi_definitions`, `kpi_goals`, `kpi_values`, `kpi_calc_runs`, `calculation_audit`. KPI definitions use a unique `key` (e.g., `new_enrollments`) with calc types (sql, js, materialized). Goals and values are segmented by school (nullable = network-wide). Values use NUMERIC(18,4) for monetary precision. Calc runs track version for reproducibility, with full input/result snapshots in the audit table.
 
+### KPI Calculation Engine
+Located in `server/kpis/`, the engine provides:
+-   **SQL Calculations**: DB function `compute_kpi_sql(kpi_id, period_start, period_end, school_id)` executes SQL templates stored in `kpi_definitions.config.sql_template` with parameterized placeholders (`:period_start`, `:period_end`, `:school_id`).
+-   **JS Calculations**: Pre-approved snippet registry in `server/kpis/js-snippets.ts` (no arbitrary code execution). Snippets: `new_enrollments`, `total_revenue`, `new_leads`, `lead_conversion_rate`, `avg_ticket`.
+-   **Advisory Locks**: `pg_try_advisory_xact_lock` prevents concurrent calculations for the same KPI/period/school combination.
+-   **Batch Computation**: `computeKpiForAllSchools` runs calculations for network + all schools in parallel with configurable concurrency (default 3).
+-   **Rollup Support**: `computeRollup` computes sub-periods incrementally and aggregates (sum/avg).
+-   **Audit Trail**: Every calc run records input snapshot + result/error snapshot in `calculation_audit`.
+-   **API Endpoints** (admin/ops only): `POST /api/kpis/:id/compute`, `POST /api/kpis/:id/compute-all`, `POST /api/kpis/:id/compute-rollup`, `GET /api/kpi-snippets`.
+
 ### Data Integration and Sync
 A Connector Sync Engine facilitates data ingestion from CRM, financial, and academic systems. It includes:
 -   **API Client**: Handles OAuth, token refresh, exponential backoff, and various pagination strategies.
