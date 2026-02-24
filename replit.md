@@ -66,8 +66,9 @@ The frontend is built with React, TailwindCSS, and shadcn/ui. It features:
 -   **Design Tokens**: Primary color is Deep Blue (#1e40af), Accent is Soft Green (#10b981). Typography uses Poppins, Inter, and Courier fonts.
 
 ## External Dependencies
--   **PostgreSQL**: Core database, hosted via Neon.
+-   **PostgreSQL**: Core database, hosted via Supabase (pooler connection via `SUPABASE_DATABASE_URL`). Falls back to `DATABASE_URL` (Neon) if Supabase is not configured.
 -   **Supabase Auth**: External authentication service for user management.
+-   **Database Migrations**: To push schema changes to Supabase, run: `DATABASE_URL=$SUPABASE_DATABASE_URL npx drizzle-kit push`
 -   **Vite**: Frontend build tool.
 -   **React Query**: Data fetching and state management.
 -   **Express.js**: Backend web framework.
