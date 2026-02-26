@@ -799,3 +799,386 @@ export type KpiGoal = typeof kpiGoals.$inferSelect;
 
 export type InsertCalculationAudit = z.infer<typeof insertCalculationAuditSchema>;
 export type CalculationAudit = typeof calculationAudit.$inferSelect;
+
+// SchoolAggregate — pre-computed school-level KPI bag populated by the KPI calc
+// edge function. Not managed by Drizzle (migration-managed in 011_school_aggregates.sql).
+export type SchoolAggregate = {
+  id: string;
+  schoolId: string;
+  date: string;                       // ISO date "YYYY-MM-DD"
+  metrics: Record<string, number>;    // e.g. { conversion_rate: 0.32, revenue: 42000 }
+  computedAt: string;                 // ISO timestamp
+  createdAt: string;
+  updatedAt: string;
+};
+
+// NetworkAggregate — pre-computed network-wide KPI totals/averages.
+// Migration-managed in 013_exec_aggregates.sql.
+export type NetworkAggregate = {
+  id: string;
+  date: string;                       // ISO date "YYYY-MM-DD"
+  metrics: Record<string, number>;    // e.g. { revenue: 5200000, conversion_rate: 0.30 }
+  computedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// SchoolComparison — normalized per-school ranking row for a specific metric and date.
+// Migration-managed in 013_exec_aggregates.sql.
+export type SchoolComparison = {
+  id: string;
+  date: string;                       // ISO date "YYYY-MM-DD"
+  metricKey: string;
+  schoolId: string;
+  metricValue: number;
+  rank: number;                       // 1 = best performing school for this metric
+  varianceToNetwork: number | null;   // % or absolute difference vs network average
+  computedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// ---------------------------------------------------------------------------
+// REPORTING SCALES AND EXPORTS
+// ---------------------------------------------------------------------------
+
+export const scheduledReports = pgTable(
+  "scheduled_reports",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    name: text("name").notNull(),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    schoolId: uuid("school_id").references(() => schools.id, { onDelete: "set null" }),
+    filters: jsonb("filters").$type<Record<string, unknown>>().default({}),
+    format: varchar("format", { length: 10 }).notNull().default("csv"), // pdf or csv
+    scheduleCron: text("schedule_cron"), // e.g., "0 8 * * 1" for every Monday at 8am
+    recipients: jsonb("recipients").$type<string[]>().default([]), // array of emails
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_scheduled_reports_owner").on(table.ownerId),
+    index("idx_scheduled_reports_next_run").on(table.nextRunAt),
+  ]
+);
+
+export const reportExports = pgTable(
+  "report_exports",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    scheduledReportId: uuid("scheduled_report_id").references(() => scheduledReports.id, {
+      onDelete: "set null",
+    }),
+    initiatedBy: uuid("initiated_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    format: varchar("format", { length: 10 }).notNull(),
+    filePath: text("file_path"), // e.g. "exports/2026/02/report-abc.csv"
+    status: varchar("status", { length: 20 }).notNull().default("pending"), // pending, success, failed
+    error: jsonb("error").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_report_exports_status").on(table.status, table.createdAt),
+  ]
+);
+
+export const insertScheduledReportSchema = createInsertSchema(scheduledReports)
+  .omit({
+    id: true,
+    lastRunAt: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    name: z.string().min(1, "Name is required").max(100),
+    ownerId: z.string().uuid("Invalid owner ID"),
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    format: z.enum(["csv", "pdf"]),
+    recipients: z.array(z.string().email("Invalid email")).optional().default([]),
+  });
+
+export const insertReportExportSchema = createInsertSchema(reportExports)
+  .omit({
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    scheduledReportId: z.string().uuid("Invalid scheduled report ID").nullable().optional(),
+    initiatedBy: z.string().uuid("Invalid user ID"),
+    format: z.enum(["csv", "pdf"]),
+  });
+
+export const reportDownloadAudit = pgTable(
+  "report_download_audit",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    exportId: uuid("export_id")
+      .notNull()
+      .references(() => reportExports.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    downloadedAt: timestamp("downloaded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_report_download_audit_export").on(table.exportId),
+    index("idx_report_download_audit_user").on(table.userId),
+  ]
+);
+
+export const insertReportDownloadAuditSchema = createInsertSchema(reportDownloadAudit)
+  .omit({
+    id: true,
+    downloadedAt: true,
+  })
+  .extend({
+    exportId: z.string().uuid("Invalid export ID"),
+    userId: z.string().uuid("Invalid user ID"),
+  });
+
+
+export type InsertScheduledReport = z.infer<typeof insertScheduledReportSchema>;
+export type ScheduledReport = typeof scheduledReports.$inferSelect;
+
+export type InsertReportExport = z.infer<typeof insertReportExportSchema>;
+export type ReportExport = typeof reportExports.$inferSelect;
+
+export type InsertReportDownloadAudit = z.infer<typeof insertReportDownloadAuditSchema>;
+export type ReportDownloadAudit = typeof reportDownloadAudit.$inferSelect;
+
+// =========================================================================
+// CHURN RULES, EVENTS, RUNS
+// =========================================================================
+
+export const churnRules = pgTable(
+  "churn_rules",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    schoolId: uuid("school_id").references(() => schools.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+    isActive: boolean("is_active").notNull().default(true),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_churn_rules_school").on(table.schoolId)]
+);
+
+export const insertChurnRuleSchema = createInsertSchema(churnRules)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    createdBy: z.string().uuid("Invalid user ID"),
+  });
+
+export const churnEvents = pgTable(
+  "churn_events",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    sourceType: varchar("source_type", { length: 20 }).notNull(),
+    sourceId: text("source_id").notNull(),
+    schoolId: uuid("school_id")
+      .notNull()
+      .references(() => schools.id, { onDelete: "cascade" }),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+    churnFlag: boolean("churn_flag").notNull().default(true),
+    churnReason: text("churn_reason"),
+    detectedBy: varchar("detected_by", { length: 20 }).notNull().default("engine"),
+    payload: jsonb("payload").$type<Record<string, unknown>>().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_churn_events_school_detected").on(table.schoolId, table.detectedAt)]
+);
+
+export const insertChurnEventSchema = createInsertSchema(churnEvents)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    schoolId: z.string().uuid("Invalid school ID"),
+    sourceType: z.enum(["lead", "enrollment"]),
+    detectedBy: z.enum(["engine", "manual"]).default("engine"),
+  });
+
+export const churnRuns = pgTable(
+  "churn_runs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    ruleId: uuid("rule_id")
+      .notNull()
+      .references(() => churnRules.id, { onDelete: "cascade" }),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    processedRecords: integer("processed_records").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_churn_runs_rule").on(table.ruleId)]
+);
+
+export const insertChurnRunSchema = createInsertSchema(churnRuns)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    ruleId: z.string().uuid("Invalid rule ID"),
+  });
+
+export type InsertChurnRule = z.infer<typeof insertChurnRuleSchema>;
+export type ChurnRule = typeof churnRules.$inferSelect;
+
+export type InsertChurnEvent = z.infer<typeof insertChurnEventSchema>;
+export type ChurnEvent = typeof churnEvents.$inferSelect;
+
+export type InsertChurnRun = z.infer<typeof insertChurnRunSchema>;
+export type ChurnRun = typeof churnRuns.$inferSelect;
+
+// =========================================================================
+// INTEGRATION MONITORING & ALERTS
+// =========================================================================
+
+export const connectorMetrics = pgTable(
+  "connector_metrics",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    connectorId: uuid("connector_id")
+      .notNull()
+      .references(() => connectors.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    durationMs: integer("duration_ms").notNull().default(0),
+    status: text("status").notNull(),
+    recordsIn: integer("records_in").notNull().default(0),
+    recordsOut: integer("records_out").notNull().default(0),
+    error: jsonb("error").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_connector_metrics_connector_time").on(table.connectorId, table.createdAt)]
+);
+
+export const insertConnectorMetricSchema = createInsertSchema(connectorMetrics)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    status: z.enum(["success", "failed", "partial"]),
+    connectorId: z.string().uuid("Invalid connector ID"),
+  });
+
+export const connectorSlas = pgTable(
+  "connector_slas",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    connectorId: uuid("connector_id")
+      .notNull()
+      .unique()
+      .references(() => connectors.id, { onDelete: "cascade" }),
+    maxLatencyMs: integer("max_latency_ms").notNull().default(5000),
+    successRateThreshold: numeric("success_rate_threshold", { precision: 5, scale: 2 }).notNull().default("95.00"),
+    escalationEmails: jsonb("escalation_emails").$type<string[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
+export const insertConnectorSlaSchema = createInsertSchema(connectorSlas)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    connectorId: z.string().uuid("Invalid connector ID"),
+    successRateThreshold: z.number().or(z.string()).transform(val => String(val)),
+    escalationEmails: z.array(z.string().email("Invalid email format")).default([])
+  });
+
+export const integrationAlerts = pgTable(
+  "integration_alerts",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    connectorId: uuid("connector_id").references(() => connectors.id, { onDelete: "cascade" }),
+    alertType: text("alert_type").notNull(),
+    severity: text("severity").notNull(),
+    message: text("message").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
+    status: text("status").notNull().default("open"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => [index("idx_integration_alerts_status_time").on(table.status, table.createdAt)]
+);
+
+export const insertIntegrationAlertSchema = createInsertSchema(integrationAlerts)
+  .omit({ id: true, createdAt: true, resolvedAt: true })
+  .extend({
+    severity: z.enum(["info", "warning", "critical"]),
+    status: z.enum(["open", "acknowledged", "resolved"]).default("open"),
+    connectorId: z.string().uuid("Invalid connector ID").nullable().optional(),
+    createdBy: z.string().uuid("Invalid user ID").nullable().optional()
+  });
+
+export const alertNotifications = pgTable(
+  "alert_notifications",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    alertId: uuid("alert_id")
+      .notNull()
+      .references(() => integrationAlerts.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    status: text("status").notNull().default("pending"),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
+export const insertAlertNotificationSchema = createInsertSchema(alertNotifications)
+  .omit({ id: true, createdAt: true, sentAt: true })
+  .extend({
+    channel: z.enum(["email", "slack", "webhook"]),
+    status: z.enum(["pending", "sent", "failed"]).default("pending"),
+    alertId: z.string().uuid("Invalid alert ID")
+  });
+
+export type InsertConnectorMetric = z.infer<typeof insertConnectorMetricSchema>;
+export type ConnectorMetric = typeof connectorMetrics.$inferSelect;
+
+export type InsertConnectorSla = z.infer<typeof insertConnectorSlaSchema>;
+export type ConnectorSla = typeof connectorSlas.$inferSelect;
+
+export type InsertIntegrationAlert = z.infer<typeof insertIntegrationAlertSchema>;
+export type IntegrationAlert = typeof integrationAlerts.$inferSelect;
+
+export type InsertAlertNotification = z.infer<typeof insertAlertNotificationSchema>;
+export type AlertNotification = typeof alertNotifications.$inferSelect;

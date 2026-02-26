@@ -31,6 +31,12 @@ import {
   type InsertKpiGoal,
   type CalculationAudit,
   type InsertCalculationAudit,
+  type ConnectorMetric,
+  type ConnectorSla,
+  type InsertConnectorSla,
+  type IntegrationAlert,
+  type InsertIntegrationAlert,
+  type AlertNotification,
   users,
   schools,
   userSchools,
@@ -47,6 +53,10 @@ import {
   kpiValues,
   kpiGoals,
   calculationAudit,
+  connectorMetrics,
+  connectorSlas,
+  integrationAlerts,
+  alertNotifications,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, isNull } from "drizzle-orm";
@@ -145,6 +155,13 @@ export interface IStorage {
 
   createCalculationAudit(audit: InsertCalculationAudit): Promise<CalculationAudit>;
   getCalculationAuditByRunId(calcRunId: string): Promise<CalculationAudit[]>;
+
+  getConnectorMetrics(connectorId: string, limit?: number): Promise<ConnectorMetric[]>;
+  getConnectorSlas(): Promise<ConnectorSla[]>;
+  getConnectorSla(connectorId: string): Promise<ConnectorSla | undefined>;
+  upsertConnectorSla(data: InsertConnectorSla): Promise<ConnectorSla>;
+  getIntegrationAlerts(limit?: number): Promise<IntegrationAlert[]>;
+  updateIntegrationAlert(id: string, data: Partial<InsertIntegrationAlert>): Promise<IntegrationAlert | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -665,6 +682,61 @@ export class DatabaseStorage implements IStorage {
       .from(calculationAudit)
       .where(eq(calculationAudit.calcRunId, calcRunId))
       .orderBy(desc(calculationAudit.createdAt));
+  }
+
+  async getConnectorMetrics(connectorId: string, limit: number = 100): Promise<ConnectorMetric[]> {
+    return db
+      .select()
+      .from(connectorMetrics)
+      .where(eq(connectorMetrics.connectorId, connectorId))
+      .orderBy(desc(connectorMetrics.createdAt))
+      .limit(limit);
+  }
+
+  async getConnectorSlas(): Promise<ConnectorSla[]> {
+    return db.select().from(connectorSlas);
+  }
+
+  async getConnectorSla(connectorId: string): Promise<ConnectorSla | undefined> {
+    const [sla] = await db.select().from(connectorSlas).where(eq(connectorSlas.connectorId, connectorId));
+    return sla;
+  }
+
+  async upsertConnectorSla(data: InsertConnectorSla): Promise<ConnectorSla> {
+    const [upserted] = await db
+      .insert(connectorSlas)
+      .values(data)
+      .onConflictDoUpdate({
+        target: connectorSlas.connectorId,
+        set: {
+          maxLatencyMs: data.maxLatencyMs,
+          successRateThreshold: data.successRateThreshold,
+          escalationEmails: data.escalationEmails,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async getIntegrationAlerts(limit: number = 200): Promise<IntegrationAlert[]> {
+    return db
+      .select()
+      .from(integrationAlerts)
+      .orderBy(desc(integrationAlerts.createdAt))
+      .limit(limit);
+  }
+
+  async updateIntegrationAlert(id: string, data: Partial<InsertIntegrationAlert>): Promise<IntegrationAlert | undefined> {
+    const [updated] = await db
+      .update(integrationAlerts)
+      .set({
+        ...data,
+        ...(data.status === 'resolved' ? { resolvedAt: new Date() } : {})
+      })
+      .where(eq(integrationAlerts.id, id))
+      .returning();
+    return updated;
   }
 }
 

@@ -123,22 +123,21 @@ app.use((req, res, next) => {
   httpServer.listen(
     {
       port,
-      host: "0.0.0.0",
-      reusePort: true,
+      host: "127.0.0.1",
     },
     () => {
       log(`serving on port ${port}`);
-
-      const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-      setInterval(async () => {
-        try {
-          await pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY leads_pipeline_agg");
-          log("Materialized view leads_pipeline_agg refreshed", "scheduler");
-        } catch (err) {
-          console.error("Failed to refresh leads_pipeline_agg:", err);
-        }
-      }, REFRESH_INTERVAL_MS);
-      log(`Pipeline aggregation refresh scheduled every ${REFRESH_INTERVAL_MS / 1000}s`, "scheduler");
-    },
+    }
   );
+
+  const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      await pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY leads_pipeline_agg");
+      log("Materialized view leads_pipeline_agg refreshed", "scheduler");
+    } catch (err) {
+      console.error("Failed to refresh leads_pipeline_agg:", err);
+    }
+  }, REFRESH_INTERVAL_MS);
+  log(`Pipeline aggregation refresh scheduled every ${REFRESH_INTERVAL_MS / 1000}s`, "scheduler");
 })();

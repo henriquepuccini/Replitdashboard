@@ -1,0 +1,9 @@
+{
+    "tasks": {
+        "start": "deno run --allow-net --allow-env index.ts"
+    },
+    "imports": {
+        "supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.8",
+        "cron-parser": "https://esm.sh/cron-parser@4.9.0"
+    }
+}

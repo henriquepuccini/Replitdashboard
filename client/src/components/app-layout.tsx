@@ -27,6 +27,10 @@ import {
   Target,
   Kanban,
   List,
+  School,
+  Network,
+  Activity,
+  ShieldAlert,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 
@@ -37,6 +41,7 @@ const ROLE_LABELS: Record<string, string> = {
   exec: "Executivo",
   finance: "Financeiro",
   ops: "Operações",
+  analytics: "Analytics"
 };
 
 function getInitials(name?: string | null, email?: string): string {
@@ -82,10 +87,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   const isAdmin = user?.role === "admin";
   const isOps = user?.role === "ops";
-
   const isDirector = user?.role === "director";
   const isExec = user?.role === "exec";
   const isSeller = user?.role === "seller";
+  const isFinance = user?.role === "finance";
+  const isAnalytics = user?.role === "analytics";
 
   const menuItems = [
     {
@@ -119,9 +125,39 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       visible: isAdmin || isDirector,
     },
     {
+      title: "Dashboard Executivo",
+      url: "/exec-dashboard",
+      icon: Network,
+      visible: isAdmin || isExec,
+    },
+    {
+      title: "Dashboard Escolar",
+      url: "/school-dashboard",
+      icon: School,
+      visible: isAdmin || isDirector || isExec || isFinance,
+    },
+    {
       title: "Integrações",
       url: "/integrations",
       icon: Plug,
+      visible: isAdmin || isOps,
+    },
+    {
+      title: "Regras Churn",
+      url: "/churn-rules",
+      icon: ShieldAlert,
+      visible: isAdmin || isDirector || isOps || isAnalytics,
+    },
+    {
+      title: "Auditoria Churn",
+      url: "/churn-events",
+      icon: Activity,
+      visible: isAdmin || isDirector || isOps || isAnalytics,
+    },
+    {
+      title: "Monitoramento",
+      url: "/monitoring",
+      icon: ShieldAlert,
       visible: isAdmin || isOps,
     },
     {

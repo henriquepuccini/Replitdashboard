@@ -17,7 +17,13 @@ import KpiDetailPage from "@/pages/kpi-detail";
 import KpiGoalsPage from "@/pages/kpi-goals";
 import PipelinePage from "@/pages/pipeline";
 import LeadsPage from "@/pages/leads";
+import SchoolDashboardPage from "@/pages/school-dashboard";
+import ExecDashboardPage from "@/pages/exec-dashboard";
+import ChurnRulesPage from "@/pages/churn-rules";
+import ChurnEventsPage from "@/pages/churn-events";
+import MonitoringDashboard from "@/pages/monitoring";
 import NotFound from "@/pages/not-found";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 function Router() {
   return (
@@ -74,6 +80,22 @@ function Router() {
         </ProtectedRoute>
       </Route>
 
+      <Route path="/school-dashboard">
+        <ProtectedRoute allowedRoles={["admin", "director", "finance", "exec"]}>
+          <AppLayout>
+            <SchoolDashboardPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/exec-dashboard">
+        <ProtectedRoute allowedRoles={["admin", "exec"]}>
+          <AppLayout>
+            <ExecDashboardPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
       <Route path="/admin/users">
         <ProtectedRoute allowedRoles={["admin"]}>
           <AppLayout>
@@ -98,6 +120,30 @@ function Router() {
         </ProtectedRoute>
       </Route>
 
+      <Route path="/churn-rules">
+        <ProtectedRoute allowedRoles={["admin", "director", "ops", "analytics"] as any}>
+          <AppLayout>
+            <ChurnRulesPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/churn-events">
+        <ProtectedRoute allowedRoles={["admin", "director", "ops", "analytics"] as any}>
+          <AppLayout>
+            <ChurnEventsPage />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/monitoring">
+        <ProtectedRoute allowedRoles={["admin", "ops"]}>
+          <AppLayout>
+            <MonitoringDashboard />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
       <Route component={NotFound} />
     </Switch>
   );
@@ -105,12 +151,14 @@ function Router() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Router />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Toaster />
+          <Router />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 

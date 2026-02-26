@@ -37,6 +37,8 @@ import { listSnippets } from "./kpis/js-snippets";
 import {
   insertKpiDefinitionSchema,
   insertKpiGoalSchema,
+  insertConnectorSlaSchema,
+  insertIntegrationAlertSchema,
 } from "@shared/schema";
 
 function handleZodError(error: unknown) {
@@ -420,7 +422,7 @@ export async function registerRoutes(
       if (!webhookSecret && !serviceRoleKey) {
         console.error(
           "AUTH SYNC: No SUPABASE_WEBHOOK_SECRET or SUPABASE_SERVICE_ROLE_KEY configured. " +
-            "Rejecting webhook request — configure at least one secret."
+          "Rejecting webhook request — configure at least one secret."
         );
         return res.status(503).json({
           message: "Auth sync endpoint not configured. Set SUPABASE_WEBHOOK_SECRET or SUPABASE_SERVICE_ROLE_KEY.",
@@ -757,6 +759,97 @@ export async function registerRoutes(
         res.status(204).send();
       } catch (error) {
         res.status(500).json({ message: "Failed to delete mapping" });
+      }
+    }
+  );
+
+  // =========================================================================
+  // INTEGRATION MONITORING & ALERTS
+  // =========================================================================
+
+  app.get(
+    "/api/monitoring/metrics/:connectorId",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        if (!isAdmin(req) && !isOps(req) && !isExec(req) && !(await isConnectorOwner(req, connectorId))) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+        const metrics = await storage.getConnectorMetrics(connectorId, limit);
+        res.json(metrics);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch connector metrics" });
+      }
+    }
+  );
+
+  app.get(
+    "/api/monitoring/slas",
+    requireAuth,
+    requireRole("admin", "ops"),
+    async (req, res) => {
+      try {
+        const slas = await storage.getConnectorSlas();
+        res.json(slas);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch SLAs" });
+      }
+    }
+  );
+
+  app.patch(
+    "/api/monitoring/slas/:connectorId",
+    requireAuth,
+    requireRole("admin", "ops"),
+    async (req, res) => {
+      try {
+        const connectorId = req.params.connectorId as string;
+        const data = insertConnectorSlaSchema.parse({
+          ...req.body,
+          connectorId,
+        });
+        const sla = await storage.upsertConnectorSla(data);
+        res.json(sla);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.get(
+    "/api/monitoring/alerts",
+    requireAuth,
+    async (req, res) => {
+      try {
+        if (!isAdmin(req) && !isOps(req) && !isExec(req)) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 200;
+        const alerts = await storage.getIntegrationAlerts(limit);
+        res.json(alerts);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch integration alerts" });
+      }
+    }
+  );
+
+  app.patch(
+    "/api/monitoring/alerts/:id",
+    requireAuth,
+    requireRole("admin", "ops"),
+    async (req, res) => {
+      try {
+        const id = req.params.id as string;
+        const data = insertIntegrationAlertSchema.partial().parse(req.body);
+        const alert = await storage.updateIntegrationAlert(id, data);
+        if (!alert) {
+          return res.status(404).json({ message: "Alert not found" });
+        }
+        res.json(alert);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
       }
     }
   );
@@ -1367,6 +1460,360 @@ export async function registerRoutes(
     } catch (error) {
       const message = error instanceof Error ? error.message : "Query failed";
       res.status(500).json({ success: false, message });
+    }
+  });
+
+
+  // =========================================================================
+  // QUERY BUILDER — filtering & drilldowns
+  // =========================================================================
+  // GET /api/query?entity=kpi_values|aggregates|comparisons
+  //   &kpiId=uuid&schoolId=uuid&metricKey=str
+  //   &periodStart=date&periodEnd=date&dateFrom=date&dateTo=date
+  //   &sortBy=column&sortDirection=ASC|DESC
+  //   &cursor=base64&page=0&limit=50
+  //
+  // All user-supplied values are passed through validateFilters() before SQL
+  // to ensure no untrusted input reaches the query parameterization layer.
+
+  app.get("/api/query", requireAuth, async (req, res) => {
+    try {
+      // Restrict to roles that should have drilldown access
+      const role = req.currentUser?.role;
+      const allowed = ["admin", "ops", "exec", "director"];
+      if (!role || !allowed.includes(role)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const { buildKpiValueQuery, buildAggregateQuery, buildComparisonQuery, validateFilters, validatePagination } =
+        await import("./query-builder");
+
+      const entity = req.query.entity as string | undefined;
+      const raw = { ...req.query } as Record<string, unknown>;
+
+      const filters = validateFilters(raw);
+      const pagination = validatePagination(raw);
+
+      let result;
+
+      switch (entity) {
+        case "kpi_values":
+          result = await buildKpiValueQuery(filters, pagination);
+          break;
+        case "aggregates":
+          result = await buildAggregateQuery(filters, pagination);
+          break;
+        case "comparisons":
+          result = await buildComparisonQuery(filters, pagination);
+          break;
+        default:
+          return res.status(400).json({
+            message: "Unknown entity. Allowed: kpi_values, aggregates, comparisons",
+          });
+      }
+
+      res.json({
+        data: result.rows,
+        pageInfo: result.pageInfo,
+        entity,
+        appliedFilters: filters,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Query failed";
+      res.status(400).json({ success: false, message });
+    }
+  });
+
+  // =========================================================================
+  // REPORT EXPORTS & DOWNLOADS
+  // =========================================================================
+
+  app.get("/api/reports/exports/:id/download", requireAuth, async (req, res) => {
+    try {
+      const exportId = req.params.id;
+      const user = req.currentUser!;
+
+      const { pool } = await import("./db");
+
+      // 1. Fetch export info to verify authorization and get file_path
+      const exportQuery = `
+        SELECT e.id, e.file_path, e.initiated_by, s.owner_id 
+        FROM report_exports e
+        LEFT JOIN scheduled_reports s ON e.scheduled_report_id = s.id
+        WHERE e.id = $1
+      `;
+      const result = await pool.query(exportQuery, [exportId]);
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ message: "Export not found" });
+      }
+
+      const reportExport = result.rows[0];
+
+      // 2. Authorization Rules: Must be Admin, Owner of the schedule, or Initiator of the export
+      const isAuthorized =
+        user.role === "admin" ||
+        user.id === reportExport.initiated_by ||
+        user.id === reportExport.owner_id;
+
+      if (!isAuthorized) {
+        return res.status(403).json({ message: "Not authorized to download this report" });
+      }
+
+      if (!reportExport.file_path) {
+        return res.status(400).json({ message: "No file associated with this export yet" });
+      }
+
+      // 3. Generate Signed URL using REST API
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+      if (!supabaseUrl || !serviceRoleKey) {
+        return res.status(500).json({ message: "Server storage not configured" });
+      }
+
+      const signUrlEndpoint = `${supabaseUrl}/storage/v1/object/sign/reports-exports/${encodeURIComponent(reportExport.file_path)}`;
+
+      const signResponse = await fetch(signUrlEndpoint, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${serviceRoleKey}`,
+          "apikey": serviceRoleKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ expiresIn: 300 }) // 5 minutes (300 seconds) TTL
+      });
+
+      if (!signResponse.ok) {
+        const errorText = await signResponse.text();
+        console.error("Failed to generate signed URL:", errorText);
+        throw new Error("Failed to generate secure download link from storage");
+      }
+
+      const signData = await signResponse.json() as { signedURL?: string };
+
+      if (!signData.signedURL) {
+        throw new Error("Invalid response from storage API");
+      }
+
+      // Prefix with the Supabase URL if it's returning a relative path (it usually returns relative)
+      let finalSignedUrl = signData.signedURL;
+      if (finalSignedUrl.startsWith("/")) {
+        finalSignedUrl = `${supabaseUrl}/storage/v1${finalSignedUrl}`;
+      }
+
+      // 4. Audit Log
+      await pool.query(
+        "INSERT INTO report_download_audit (export_id, user_id) VALUES ($1, $2)",
+        [exportId, user.id]
+      );
+
+      res.json({ url: finalSignedUrl });
+    } catch (error) {
+      console.error("Report download error:", error);
+      const message = error instanceof Error ? error.message : "Failed to download report";
+      res.status(500).json({ success: false, message });
+    }
+  });
+
+  app.post("/api/storage/signed-url", requireAuth, async (req, res) => {
+    try {
+      const { path, bucket = "reports" } = req.body;
+
+      if (!path) {
+        return res.status(400).json({ message: "Path is required" });
+      }
+
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+      if (!supabaseUrl || !serviceRoleKey) {
+        return res.status(500).json({ message: "Server storage not configured" });
+      }
+
+      const signUrlEndpoint = `${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodeURIComponent(path)}`;
+
+      const signResponse = await fetch(signUrlEndpoint, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${serviceRoleKey}`,
+          "apikey": serviceRoleKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ expiresIn: 300 }) // 5 minutes TTL
+      });
+
+      if (!signResponse.ok) {
+        const errorText = await signResponse.text();
+        console.error("Failed to generate signed URL:", errorText);
+        throw new Error("Failed to generate secure download link from storage");
+      }
+
+      const signData = await signResponse.json() as { signedURL?: string };
+
+      if (!signData.signedURL) {
+        throw new Error("Invalid response from storage API");
+      }
+
+      let finalSignedUrl = signData.signedURL;
+      if (finalSignedUrl.startsWith("/")) {
+        finalSignedUrl = `${supabaseUrl}/storage/v1${finalSignedUrl}`;
+      }
+
+      res.json({ url: finalSignedUrl });
+    } catch (error) {
+      console.error("Signed URL generation error:", error);
+      const message = error instanceof Error ? error.message : "Failed to generate signed URL";
+      res.status(500).json({ success: false, message });
+    }
+  });
+
+  // =========================================================================
+  // CHURN RULES & EVENTS
+  // =========================================================================
+
+  app.get("/api/churn-rules", requireAuth, async (req, res) => {
+    try {
+      const { pool } = await import("./db");
+      // Use RLS to filter automatically
+      const result = await pool.query(`
+        SELECT r.*, s.name as school_name 
+        FROM churn_rules r
+        LEFT JOIN schools s ON r.school_id = s.id
+        ORDER BY r.created_at DESC
+      `);
+      res.json(result.rows);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch rules" });
+    }
+  });
+
+  app.post("/api/churn-rules", requireAuth, async (req, res) => {
+    try {
+      const { name, school_id, config, is_active } = req.body;
+      const { pool } = await import("./db");
+      const result = await pool.query(
+        "INSERT INTO churn_rules (name, school_id, config, is_active, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+        [name, school_id || null, config, is_active ?? true, req.currentUser!.id]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: "Failed to create rule" });
+    }
+  });
+
+  app.put("/api/churn-rules/:id", requireAuth, async (req, res) => {
+    try {
+      const { name, config, is_active } = req.body;
+      const { pool } = await import("./db");
+      const result = await pool.query(
+        "UPDATE churn_rules SET name = $1, config = $2, is_active = $3 WHERE id = $4 RETURNING *",
+        [name, config, is_active, req.params.id]
+      );
+      if (result.rowCount === 0) return res.status(404).json({ message: "Not found or unauthorized" });
+      res.json(result.rows[0]);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update rule" });
+    }
+  });
+
+  app.delete("/api/churn-rules/:id", requireAuth, async (req, res) => {
+    try {
+      const { pool } = await import("./db");
+      const result = await pool.query("DELETE FROM churn_rules WHERE id = $1", [req.params.id]);
+      if (result.rowCount === 0) return res.status(404).json({ message: "Not found or unauthorized" });
+      res.sendStatus(204);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete rule" });
+    }
+  });
+
+  app.get("/api/churn-events", requireAuth, async (req, res) => {
+    try {
+      const { school_id, source_type, limit = 100 } = req.query;
+      const { pool } = await import("./db");
+
+      let query = "SELECT e.*, s.name as school_name FROM churn_events e LEFT JOIN schools s ON e.school_id = s.id WHERE 1=1";
+      const params: any[] = [];
+      let paramCount = 1;
+
+      if (school_id) {
+        query += ` AND e.school_id = $${paramCount++}`;
+        params.push(school_id);
+      }
+      if (source_type) {
+        query += ` AND e.source_type = $${paramCount++}`;
+        params.push(source_type);
+      }
+
+      query += ` ORDER BY e.detected_at DESC LIMIT $${paramCount}`;
+      params.push(limit);
+
+      const result = await pool.query(query, params);
+      res.json(result.rows);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch events" });
+    }
+  });
+
+  app.get("/api/churn-runs", requireAuth, async (req, res) => {
+    try {
+      const { rule_id } = req.query;
+      const { pool } = await import("./db");
+      let query = "SELECT * FROM churn_runs WHERE 1=1";
+      const params: any[] = [];
+      if (rule_id) {
+        query += " AND rule_id = $1";
+        params.push(rule_id);
+      }
+      query += " ORDER BY started_at DESC LIMIT 50";
+      const result = await pool.query(query, params);
+      res.json(result.rows);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch runs" });
+    }
+  });
+
+  app.post("/api/churn-rules/:id/run", requireAuth, async (req, res) => {
+    try {
+      const ruleId = req.params.id;
+      const { dry_run } = req.body;
+
+      const supabaseUrl = process.env.SUPABASE_URL;
+      // The endpoint requires an Auth header. We can pass the authenticated user's access token 
+      // if they used supabase auth on the frontend, OR we proxy it by passing the Service Role 
+      // and trusting the fact that they hit this endpoint behind `requireAuth` checking.
+      // Because our edge function also verifies RLS or accepts Service Role, we will use Service Role server-to-server.
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+      if (!supabaseUrl || !serviceRoleKey) {
+        return res.status(500).json({ message: "Supabase integration not configured" });
+      }
+
+      const functionUrl = `${supabaseUrl}/functions/v1/churn_run`;
+
+      const fnRes = await fetch(functionUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${serviceRoleKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          rule_id: ruleId,
+          dry_run: !!dry_run
+        })
+      });
+
+      const data = await fnRes.json();
+      if (!fnRes.ok) {
+        return res.status(fnRes.status).json({ message: data.message || "Function execution failed" });
+      }
+
+      res.json(data);
+    } catch (error) {
+      console.error("Failed to run churn engine:", error);
+      res.status(500).json({ message: "Failed to invoke churn engine" });
     }
   });
 
