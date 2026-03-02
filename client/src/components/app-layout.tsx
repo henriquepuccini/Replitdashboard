@@ -31,6 +31,7 @@ import {
   Network,
   Activity,
   ShieldAlert,
+  PencilLine,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 
@@ -159,6 +160,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       url: "/monitoring",
       icon: ShieldAlert,
       visible: isAdmin || isOps,
+    },
+    {
+      title: "Entrada Manual",
+      url: "/manual-input",
+      icon: PencilLine,
+      visible: isAdmin || isDirector,
     },
     {
       title: "Usuários",

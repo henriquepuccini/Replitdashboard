@@ -22,8 +22,12 @@ import { useAuth } from "@/hooks/use-auth";
 import { LeadDetailSheet } from "@/components/lead-detail-sheet";
 import type { Lead } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
-import { format } from "date-fns";
+import { format, startOfMonth, endOfMonth } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { usePipelineMetrics, useUpdatePipelineGoal } from "@/hooks/use-pipeline-metrics";
+import { Progress } from "@/components/ui/progress";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 
 export default function PipelinePage() {
   const { user } = useAuth();
@@ -43,6 +47,40 @@ export default function PipelinePage() {
 
   const { data: leadsResp, isLoading } = useLeads(filters);
   const leads = leadsResp?.data || [];
+
+  const metricsFilters = useMemo(() => ({
+    school_id: schoolFilter,
+    from: startOfMonth(new Date()),
+    to: endOfMonth(new Date())
+  }), [schoolFilter]);
+
+  const { data: metricsData, isLoading: isLoadingMetrics } = usePipelineMetrics(user?.id, metricsFilters);
+  const updateGoal = useUpdatePipelineGoal(user?.id);
+  const [goalInput, setGoalInput] = useState("");
+  const [isGoalDialogOpen, setIsGoalDialogOpen] = useState(false);
+
+  const handleSetGoal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const target = parseFloat(goalInput);
+    if (isNaN(target) || target <= 0) {
+      toast({ title: "Invalido", description: "Meta deve ser um número maior que zero.", variant: "destructive" });
+      return;
+    }
+
+    updateGoal.mutate({
+      target,
+      periodStart: format(metricsFilters.from, "yyyy-MM-dd"),
+      periodEnd: format(metricsFilters.to, "yyyy-MM-dd")
+    }, {
+      onSuccess: () => {
+        setIsGoalDialogOpen(false);
+        toast({ title: "Sucesso", description: "Meta definida." });
+      },
+      onError: () => {
+        toast({ title: "Erro", description: "Falha ao salvar meta.", variant: "destructive" });
+      }
+    });
+  };
 
   const stageGroups = useMemo(() => {
     const groups: Record<string, Lead[]> = {};
@@ -144,6 +182,76 @@ export default function PipelinePage() {
         </div>
       </div>
 
+      {!isLoadingMetrics && metricsData && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          {/* Goal Progress Card */}
+          <div className="rounded-lg border bg-card text-card-foreground p-4 shadow-sm flex flex-col justify-center">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-sm font-medium">Progresso da Meta ({format(new Date(), 'MMMM', { locale: ptBR })})</span>
+              {isSeller && (
+                <Dialog open={isGoalDialogOpen} onOpenChange={setIsGoalDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-6 text-xs px-2">Definir Meta</Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Definir Meta do Mês</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={handleSetGoal} className="space-y-4 pt-4">
+                      <div className="space-y-2">
+                        <Label>Meta de Matrículas</Label>
+                        <Input
+                          type="number"
+                          value={goalInput}
+                          onChange={(e) => setGoalInput(e.target.value)}
+                          placeholder="Ex: 50"
+                          min="1"
+                          required
+                        />
+                      </div>
+                      <Button type="submit" className="w-full" disabled={updateGoal.isPending}>
+                        {updateGoal.isPending ? "Salvando..." : "Salvar Meta"}
+                      </Button>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+              )}
+            </div>
+
+            {metricsData.goal ? (
+              <>
+                <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                  <span>{metricsData.metrics.totalEnrollments} realizadas</span>
+                  <span>{metricsData.goal} meta</span>
+                </div>
+                <Progress value={Math.min(100, (metricsData.metrics.totalEnrollments / metricsData.goal) * 100)} className="h-2" />
+                <p className="text-xs text-right mt-1 font-medium text-muted-foreground">
+                  {((metricsData.metrics.totalEnrollments / metricsData.goal) * 100).toFixed(0)}%
+                </p>
+              </>
+            ) : (
+              <div className="text-sm text-muted-foreground text-center py-2">
+                Meta não definida para este mês
+              </div>
+            )}
+          </div>
+
+          {/* Conversion Rate Card */}
+          <div className="rounded-lg border bg-card text-card-foreground p-4 shadow-sm flex flex-col justify-center">
+            <span className="text-sm font-medium mb-2">Taxa de Conversão Pessoal</span>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-bold">{metricsData.metrics.conversionRate.toFixed(1)}%</span>
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                vs {metricsData.schoolAvgConversion.toFixed(1)}% média esc.
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {metricsData.metrics.totalEnrollments} matrículas de {metricsData.metrics.totalLeads} leads
+            </p>
+          </div>
+        </div>
+      )}
+
       <DragDropContext onDragEnd={handleDragEnd}>
         <div className="flex gap-3 overflow-x-auto pb-4 flex-1 min-h-0">
           {PIPELINE_STAGES.filter((s) => s.key !== "lost").map((stage) => (
@@ -152,17 +260,23 @@ export default function PipelinePage() {
                 <div
                   ref={provided.innerRef}
                   {...provided.droppableProps}
-                  className={`flex-shrink-0 w-72 flex flex-col rounded-lg border ${
-                    snapshot.isDraggingOver
+                  className={`flex-shrink-0 w-72 flex flex-col rounded-lg border ${snapshot.isDraggingOver
                       ? "border-primary bg-primary/5"
                       : "border-border bg-muted/30"
-                  }`}
+                    }`}
                   data-testid={`column-stage-${stage.key}`}
                 >
                   <div className="flex items-center justify-between p-3 border-b">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2.5 h-2.5 rounded-full ${stage.color}`} />
-                      <span className="font-semibold text-sm">{stage.label}</span>
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2.5 h-2.5 rounded-full ${stage.color}`} />
+                        <span className="font-semibold text-sm">{stage.label}</span>
+                      </div>
+                      {metricsData?.timePerStage[stage.key] !== undefined && (
+                        <span className="text-[10px] text-muted-foreground mt-0.5 ml-4">
+                          Tempo médio: {metricsData.timePerStage[stage.key]} dias
+                        </span>
+                      )}
                     </div>
                     <Badge variant="secondary" className="text-xs" data-testid={`badge-count-${stage.key}`}>
                       {stageGroups[stage.key]?.length || 0}
@@ -175,9 +289,8 @@ export default function PipelinePage() {
                           <div
                             ref={provided.innerRef}
                             {...provided.draggableProps}
-                            className={`group rounded-md border bg-card p-3 shadow-sm cursor-pointer transition-shadow ${
-                              snapshot.isDragging ? "shadow-lg ring-2 ring-primary/30" : "hover:shadow-md"
-                            }`}
+                            className={`group rounded-md border bg-card p-3 shadow-sm cursor-pointer transition-shadow ${snapshot.isDragging ? "shadow-lg ring-2 ring-primary/30" : "hover:shadow-md"
+                              }`}
                             onClick={() => setSelectedLeadId(lead.id)}
                             data-testid={`card-lead-${lead.id}`}
                           >

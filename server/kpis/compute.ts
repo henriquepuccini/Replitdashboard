@@ -210,7 +210,7 @@ export async function computeKpi(
   } catch (error) {
     try {
       await client.query("ROLLBACK");
-    } catch (_) {}
+    } catch (_) { }
     throw error;
   } finally {
     client.release();
@@ -339,4 +339,32 @@ export async function computeRollup(
     userId,
     version: `rollup_${aggregation}_${Date.now()}`,
   });
+}
+
+/**
+ * Returns the sum of manual_inputs rows for a given metric key within a date
+ * range, optionally filtered by school. Returns null if no rows exist.
+ *
+ * Intended for use by JS KPI snippets that need manually-entered values
+ * (e.g. custo_marketing for CAC, capacidade_turma for occupancy rate).
+ */
+export async function getManualInputValue(
+  chaveMetrica: string,
+  periodStart: string,
+  periodEnd: string,
+  schoolId?: string | null
+): Promise<number | null> {
+  const result = await pool.query<{ total: string | null }>(
+    `SELECT SUM(valor)::text AS total
+     FROM public.manual_inputs
+     WHERE chave_metrica = $1
+       AND data_referencia >= $2::date
+       AND data_referencia <= $3::date
+       AND ($4::uuid IS NULL OR school_id = $4::uuid)`,
+    [chaveMetrica, periodStart, periodEnd, schoolId ?? null]
+  );
+  const raw = result.rows[0]?.total;
+  if (raw == null) return null;
+  const n = parseFloat(raw);
+  return isNaN(n) ? null : n;
 }

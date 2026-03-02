@@ -80,22 +80,38 @@ const TYPE_LABELS: Record<string, string> = {
   crm: "CRM",
   finance: "Financeiro",
   academic: "Acadêmico",
+  google_sheets: "Google Sheets",
+  manual_input: "Input Manual",
 };
 
 const TYPE_VARIANTS: Record<string, string> = {
   crm: "bg-chart-1/15 text-chart-1 border-chart-1/30",
   finance: "bg-chart-2/15 text-chart-2 border-chart-2/30",
   academic: "bg-chart-4/15 text-chart-4 border-chart-4/30",
+  google_sheets: "bg-chart-3/15 text-chart-3 border-chart-3/30",
+  manual_input: "bg-chart-5/15 text-chart-5 border-chart-5/30",
 };
 
-const createConnectorSchema = z.object({
+const baseSchema = z.object({
   name: z.string().min(1, "Nome é obrigatório"),
-  type: z.enum(["crm", "finance", "academic"], {
-    required_error: "Tipo é obrigatório",
-  }),
-  baseUrl: z.string().url("URL base inválida").optional().or(z.literal("")),
   scheduleCron: z.string().optional().or(z.literal("")),
 });
+
+const createConnectorSchema = z.discriminatedUnion("type", [
+  baseSchema.extend({
+    type: z.literal("google_sheets"),
+    spreadsheetId: z.string().min(1, "Spreadsheet ID é obrigatório"),
+    sheetName: z.string().min(1, "Nome da Aba é obrigatório"),
+    sheetRange: z.string().optional().or(z.literal("")),
+  }),
+  baseSchema.extend({
+    type: z.literal("manual_input"),
+  }),
+  baseSchema.extend({
+    type: z.enum(["crm", "finance", "academic"]),
+    baseUrl: z.string().url("URL base inválida").optional().or(z.literal("")),
+  }),
+]);
 
 type CreateConnectorForm = z.infer<typeof createConnectorSchema>;
 
@@ -150,7 +166,14 @@ export default function IntegrationsPage() {
 
   function handleCreate(data: CreateConnectorForm) {
     const config: Record<string, unknown> = {};
-    if (data.baseUrl) config.baseUrl = data.baseUrl;
+    if (data.type === "google_sheets") {
+      config.spreadsheetId = data.spreadsheetId;
+      config.sheetName = data.sheetName;
+      if (data.sheetRange) config.range = data.sheetRange;
+      // OAuth credentials must be added later via connector detail page / API
+    } else if (data.type !== "manual_input") {
+      if (data.baseUrl) config.baseUrl = data.baseUrl;
+    }
     createMutation.mutate(
       {
         name: data.name,
@@ -262,23 +285,86 @@ export default function IntegrationsPage() {
                       </FormItem>
                     )}
                   />
-                  <FormField
-                    control={form.control}
-                    name="baseUrl"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>URL Base (opcional)</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="https://api.exemplo.com"
-                            data-testid="input-connector-url"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  {/* Google Sheets fields – only shown when type is google_sheets */}
+                  {form.watch("type") === "google_sheets" && (
+                    <>
+                      <FormField
+                        control={form.control}
+                        name="spreadsheetId"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Spreadsheet ID <span className="text-destructive">*</span></FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+                                data-testid="input-connector-spreadsheet-id"
+                                {...field}
+                                value={field.value ?? ""}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="sheetName"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Nome da Aba <span className="text-destructive">*</span></FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="Leads"
+                                data-testid="input-connector-sheet-name"
+                                {...field}
+                                value={field.value ?? ""}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="sheetRange"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Intervalo (A1 notation)</FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="A1:Z1000"
+                                data-testid="input-connector-sheet-range"
+                                {...field}
+                                value={field.value ?? ""}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </>
+                  )}
+                  {/* Standard URL field – shown for everything except manual_input and google_sheets */}
+                  {form.watch("type") !== "google_sheets" && form.watch("type") !== "manual_input" && (
+                    <FormField
+                      control={form.control}
+                      name="baseUrl"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>URL Base (opcional)</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="https://api.exemplo.com"
+                              data-testid="input-connector-url"
+                              {...field}
+                              value={field.value ?? ""}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
                   <FormField
                     control={form.control}
                     name="scheduleCron"

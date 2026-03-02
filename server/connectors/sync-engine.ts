@@ -6,6 +6,7 @@ import type {
   ConnectorType,
 } from "@shared/schema";
 import { fetchConnectorData, type ApiClientConfig } from "./api-client";
+import { fetchGoogleSheetData } from "./google-sheets-client";
 import { applyMappings, extractSourceId } from "./transforms";
 
 export interface SyncOptions {
@@ -39,6 +40,7 @@ function getTargetTable(
 ): "leads" | "payments" | "enrollments" {
   switch (connectorType) {
     case "crm":
+    case "google_sheets":
       return "leads";
     case "finance":
       return "payments";
@@ -160,11 +162,16 @@ export async function runConnector(
 
       let fetchResult;
       try {
-        fetchResult = await fetchConnectorData(connector, {
-          cursor,
-          offset,
-          page,
-        });
+        if (connector.type === "google_sheets") {
+          // Google Sheets is fetched in a single call — no pagination loop
+          fetchResult = await fetchGoogleSheetData(connector);
+        } else {
+          fetchResult = await fetchConnectorData(connector, {
+            cursor,
+            offset,
+            page,
+          });
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         errors.push({ type: "fetch", message: `Page ${pages}: ${msg}` });
@@ -237,9 +244,9 @@ export async function runConnector(
         error:
           errors.length > 0
             ? {
-                count: errors.length,
-                latest: errors.slice(-5).map((e) => e.message),
-              }
+              count: errors.length,
+              latest: errors.slice(-5).map((e) => e.message),
+            }
             : undefined,
       });
 
@@ -263,10 +270,10 @@ export async function runConnector(
       error:
         errors.length > 0
           ? {
-              count: errors.length,
-              errors: errors.slice(0, 50),
-              unmappedFields: Array.from(allUnmappedFields),
-            }
+            count: errors.length,
+            errors: errors.slice(0, 50),
+            unmappedFields: Array.from(allUnmappedFields),
+          }
           : undefined,
     });
 
@@ -284,8 +291,8 @@ export async function runConnector(
 
     console.log(
       `[sync] Connector ${connector.name} (${connectorId}): ${finalStatus} - ` +
-        `${recordsIn} in, ${recordsOut} out, ${errors.length} errors, ` +
-        `${pages} pages, ${result.durationMs}ms`
+      `${recordsIn} in, ${recordsOut} out, ${errors.length} errors, ` +
+      `${pages} pages, ${result.durationMs}ms`
     );
 
     return result;

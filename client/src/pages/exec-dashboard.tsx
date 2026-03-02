@@ -8,6 +8,7 @@ import {
     useSchoolComparison,
     exportExecDashboard,
 } from "@/hooks/use-exec-dashboard";
+import { useCeoKpis } from "@/hooks/use-ceo-kpis";
 import { SchoolComparisonHeatmap } from "@/components/school-comparison-heatmap";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -80,6 +81,14 @@ import {
     Loader2,
     ChevronLeft,
     ChevronRight,
+    Users,
+    DollarSign,
+    Target,
+    Percent,
+    Activity,
+    Gauge,
+    Ratio,
+    Tag,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -123,14 +132,21 @@ function KpiCard({
     value,
     delta,
     icon,
+    onClick,
+    noData,
 }: {
     label: string;
     value: string;
     delta?: number | null;
     icon: React.ReactNode;
+    onClick?: () => void;
+    noData?: boolean;
 }) {
     return (
-        <Card>
+        <Card
+            className={onClick ? "cursor-pointer hover:border-primary/40 transition-colors" : ""}
+            onClick={onClick}
+        >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
                     {label}
@@ -140,22 +156,28 @@ function KpiCard({
                 </div>
             </CardHeader>
             <CardContent>
-                <div className="text-2xl font-bold tracking-tight">{value}</div>
-                {delta !== null && delta !== undefined && (
-                    <p
-                        className={`flex items-center gap-1 text-xs mt-1 ${delta >= 0
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : "text-rose-600 dark:text-rose-400"
-                            }`}
-                    >
-                        {delta >= 0 ? (
-                            <TrendingUp className="h-3.5 w-3.5" />
-                        ) : (
-                            <TrendingDown className="h-3.5 w-3.5" />
+                {noData ? (
+                    <div className="text-sm text-muted-foreground italic">Sem dados</div>
+                ) : (
+                    <>
+                        <div className="text-2xl font-bold tracking-tight">{value}</div>
+                        {delta !== null && delta !== undefined && (
+                            <p
+                                className={`flex items-center gap-1 text-xs mt-1 ${delta >= 0
+                                    ? "text-emerald-600 dark:text-emerald-400"
+                                    : "text-rose-600 dark:text-rose-400"
+                                    }`}
+                            >
+                                {delta >= 0 ? (
+                                    <TrendingUp className="h-3.5 w-3.5" />
+                                ) : (
+                                    <TrendingDown className="h-3.5 w-3.5" />
+                                )}
+                                {delta >= 0 ? "+" : ""}
+                                {NUM(delta)}% vs período anterior
+                            </p>
                         )}
-                        {delta >= 0 ? "+" : ""}
-                        {NUM(delta)}% vs período anterior
-                    </p>
+                    </>
                 )}
             </CardContent>
         </Card>
@@ -210,8 +232,12 @@ export default function ExecDashboardPage() {
     // Metric selector (for comparison table and heatmap focus)
     const focusMetric = filters.metric;
 
-    // Pagination
+    // Pagination and Sorting
     const [page, setPage] = useState(0);
+    const [sortConfig, setSortConfig] = useState<{
+        key: 'revenue' | 'new_enrollments' | 'retention_rate' | 'average_ticket' | 'occupancy_rate';
+        direction: 'asc' | 'desc';
+    } | null>(null);
 
     // Data
     const { data: networkAggs, isLoading: aggLoading } = useNetworkAggregates({
@@ -230,6 +256,33 @@ export default function ExecDashboardPage() {
         from: periodFrom,
         to: periodTo,
     });
+
+    // CEO KPIs from kpi_values
+    const { data: ceoKpis, isLoading: ceoLoading } = useCeoKpis({
+        from: periodFrom,
+        to: periodTo,
+    });
+
+    /** Get a CEO KPI value formatted for display */
+    function ceoVal(key: string, fmt: "brl" | "pct" | "num" | "ratio" = "num"): string {
+        const entry = ceoKpis?.[key];
+        if (!entry?.value && entry?.value !== 0) return "—";
+        const v = entry.value;
+        switch (fmt) {
+            case "brl": return BRL(v);
+            case "pct": return v.toFixed(1) + "%";
+            case "ratio": return v.toFixed(2) + "x";
+            default: return NUM(v);
+        }
+    }
+    function ceoHasData(key: string): boolean {
+        const entry = ceoKpis?.[key];
+        return entry?.value !== null && entry?.value !== undefined && !entry?.metadata?.warning;
+    }
+    function ceoDrill(key: string) {
+        const entry = ceoKpis?.[key];
+        if (entry?.kpiId) setLocation(`/kpis/${entry.kpiId}`);
+    }
 
     // Schools map for display names
     const { data: schools } = useSchools();
@@ -296,6 +349,69 @@ export default function ExecDashboardPage() {
     };
 
     const isLoading = aggLoading || compLoading;
+
+    // Pivot Data for Multi-Column Table
+    const pivotedSchools = useMemo(() => {
+        if (!allComparisons) return [];
+
+        type SchoolRow = {
+            id: string;
+            revenue: number;
+            new_enrollments: number;
+            retention_rate: number;
+            average_ticket: number;
+            occupancy_rate: number;
+        };
+
+        const map = new Map<string, SchoolRow>();
+
+        for (const row of allComparisons) {
+            if (!map.has(row.schoolId)) {
+                map.set(row.schoolId, {
+                    id: row.schoolId,
+                    revenue: 0,
+                    new_enrollments: 0,
+                    retention_rate: 0,
+                    average_ticket: 0,
+                    occupancy_rate: 0,
+                });
+            }
+            const s = map.get(row.schoolId)!;
+            if (row.metricKey === 'revenue') s.revenue = row.metricValue;
+            if (row.metricKey === 'new_enrollments') s.new_enrollments = row.metricValue;
+            if (row.metricKey === 'retention_rate') s.retention_rate = row.metricValue;
+            if (row.metricKey === 'average_ticket') s.average_ticket = row.metricValue;
+            if (row.metricKey === 'occupancy_rate') s.occupancy_rate = row.metricValue;
+        }
+
+        let result = Array.from(map.values());
+
+        if (sortConfig) {
+            result.sort((a, b) => {
+                const aVal = a[sortConfig.key];
+                const bVal = b[sortConfig.key];
+                if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+                if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+                return 0;
+            });
+        }
+
+        return result;
+    }, [allComparisons, sortConfig]);
+
+    const paginatedSchools = useMemo(() => {
+        const start = page * PAGE_SIZE;
+        return pivotedSchools.slice(start, start + PAGE_SIZE);
+    }, [pivotedSchools, page]);
+
+    const handleSort = (key: 'revenue' | 'new_enrollments' | 'retention_rate' | 'average_ticket' | 'occupancy_rate') => {
+        let direction: 'asc' | 'desc' = 'desc';
+        if (sortConfig && sortConfig.key === key && sortConfig.direction === 'desc') {
+            direction = 'asc';
+        }
+        setSortConfig({ key, direction });
+        setPage(0);
+    };
 
     return (
         <div className="space-y-6" data-testid="page-exec-dashboard">
@@ -399,47 +515,50 @@ export default function ExecDashboardPage() {
 
                 {/* ── Rede ─────────────────────────────────────────────────── */}
                 <TabsContent value="network" className="space-y-6 mt-4">
-                    {/* Network KPI Cards */}
-                    {aggLoading ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                            {[1, 2, 3].map((i) => (
-                                <Skeleton key={i} className="h-32 w-full rounded-xl" />
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                            <KpiCard
-                                label="Receita da Rede"
-                                value={
-                                    latest?.metrics["revenue"]
-                                        ? BRL(latest.metrics["revenue"])
-                                        : "—"
-                                }
-                                delta={delta("revenue")}
-                                icon={<Globe className="h-4 w-4" />}
-                            />
-                            <KpiCard
-                                label="Conversão Média"
-                                value={
-                                    latest?.metrics["conversion_rate"]
-                                        ? PCT(latest.metrics["conversion_rate"])
-                                        : "—"
-                                }
-                                delta={delta("conversion_rate")}
-                                icon={<BarChart3 className="h-4 w-4" />}
-                            />
-                            <KpiCard
-                                label="Churn Médio"
-                                value={
-                                    latest?.metrics["churn_rate"]
-                                        ? PCT(latest.metrics["churn_rate"])
-                                        : "—"
-                                }
-                                delta={delta("churn_rate")}
-                                icon={<Trophy className="h-4 w-4" />}
-                            />
-                        </div>
-                    )}
+                    {/* ── Main KPI Cards ────────────────────────────────────── */}
+                    <div>
+                        {(aggLoading || ceoLoading) ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                {[1, 2, 3, 4].map((i) => (
+                                    <Skeleton key={i} className="h-32 w-full rounded-xl" />
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                <KpiCard
+                                    label="Total de Alunos Ativos"
+                                    value={ceoVal("active_students")}
+                                    icon={<Users className="h-4 w-4" />}
+                                    noData={!ceoHasData("active_students")}
+                                    onClick={() => ceoDrill("active_students")}
+                                />
+                                <KpiCard
+                                    label="Faturamento Realizado"
+                                    value={
+                                        latest?.metrics["revenue"]
+                                            ? BRL(latest.metrics["revenue"])
+                                            : "—"
+                                    }
+                                    delta={delta("revenue")}
+                                    icon={<DollarSign className="h-4 w-4" />}
+                                />
+                                <KpiCard
+                                    label="Faturamento Estimado"
+                                    value={ceoVal("estimated_revenue", "brl")}
+                                    icon={<Target className="h-4 w-4" />}
+                                    noData={!ceoHasData("estimated_revenue")}
+                                    onClick={() => ceoDrill("estimated_revenue")}
+                                />
+                                <KpiCard
+                                    label="Taxa de Inadimplência"
+                                    value={ceoVal("dso", "pct")}
+                                    icon={<Ratio className="h-4 w-4" />}
+                                    noData={!ceoHasData("dso")}
+                                    onClick={() => ceoDrill("dso")}
+                                />
+                            </div>
+                        )}
+                    </div>
 
                     {/* Network Time Series */}
                     <Card>
@@ -517,44 +636,21 @@ export default function ExecDashboardPage() {
 
                 {/* ── Comparação ───────────────────────────────────────────── */}
                 <TabsContent value="comparison" className="space-y-4 mt-4">
-                    <div className="flex items-center gap-3 flex-wrap">
-                        {/* Metric selector */}
-                        <Select
-                            value={focusMetric}
-                            onValueChange={(v) => { setFilter("metric", v); setPage(0); }}
-                        >
-                            <SelectTrigger className="w-[200px]" data-testid="select-metric">
-                                <SelectValue placeholder="Métrica" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {availableMetrics.length ? (
-                                    availableMetrics.map((k) => (
-                                        <SelectItem key={k} value={k}>
-                                            {k.replace(/_/g, " ")}
-                                        </SelectItem>
-                                    ))
-                                ) : (
-                                    <SelectItem value="revenue">revenue</SelectItem>
-                                )}
-                            </SelectContent>
-                        </Select>
-                    </div>
-
                     <Card>
                         <CardHeader className="pb-3">
-                            <CardTitle className="text-base">Ranking de Escolas</CardTitle>
+                            <CardTitle className="text-base">Performance das Unidades</CardTitle>
                             <CardDescription>
-                                {focusMetric.replace(/_/g, " ")} · {periodLabel}
+                                {periodLabel}
                             </CardDescription>
                         </CardHeader>
-                        <CardContent className="p-0">
+                        <CardContent className="p-0 overflow-x-auto">
                             {isLoading ? (
                                 <div className="space-y-2 p-4">
                                     {[1, 2, 3, 4, 5].map((i) => (
                                         <Skeleton key={i} className="h-10 w-full" />
                                     ))}
                                 </div>
-                            ) : !comparisons?.length ? (
+                            ) : !paginatedSchools.length ? (
                                 <p className="text-sm text-muted-foreground text-center py-10">
                                     Nenhum dado de comparação para este período
                                 </p>
@@ -563,39 +659,64 @@ export default function ExecDashboardPage() {
                                     <Table>
                                         <TableHeader>
                                             <TableRow>
-                                                <TableHead className="w-12">#</TableHead>
                                                 <TableHead>Escola</TableHead>
-                                                <TableHead className="text-right">Valor</TableHead>
-                                                <TableHead className="text-right">Δ Rede</TableHead>
+                                                <TableHead
+                                                    className="text-right cursor-pointer hover:bg-muted/50"
+                                                    onClick={() => handleSort('revenue')}
+                                                >
+                                                    Faturamento {sortConfig?.key === 'revenue' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                                </TableHead>
+                                                <TableHead
+                                                    className="text-right cursor-pointer hover:bg-muted/50"
+                                                    onClick={() => handleSort('new_enrollments')}
+                                                >
+                                                    Matrículas {sortConfig?.key === 'new_enrollments' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                                </TableHead>
+                                                <TableHead
+                                                    className="text-right cursor-pointer hover:bg-muted/50"
+                                                    onClick={() => handleSort('retention_rate')}
+                                                >
+                                                    Retenção {sortConfig?.key === 'retention_rate' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                                </TableHead>
+                                                <TableHead
+                                                    className="text-right cursor-pointer hover:bg-muted/50"
+                                                    onClick={() => handleSort('average_ticket')}
+                                                >
+                                                    Ticket Médio {sortConfig?.key === 'average_ticket' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                                </TableHead>
+                                                <TableHead
+                                                    className="text-right cursor-pointer hover:bg-muted/50"
+                                                    onClick={() => handleSort('occupancy_rate')}
+                                                >
+                                                    Ocupação {sortConfig?.key === 'occupancy_rate' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                                                </TableHead>
                                                 <TableHead className="w-10" />
                                             </TableRow>
                                         </TableHeader>
                                         <TableBody>
-                                            {comparisons.map((row) => (
+                                            {paginatedSchools.map((row) => (
                                                 <TableRow
                                                     key={row.id}
                                                     className="cursor-pointer hover:bg-muted/50 transition-colors"
-                                                    onClick={() =>
-                                                        setLocation(
-                                                            `/school-dashboard${buildQueryString({
-                                                                school: row.schoolId,
-                                                                metric: row.metricKey,
-                                                            })}`
-                                                        )
-                                                    }
-                                                    data-testid={`row-comparison-${row.schoolId}`}
+                                                    onClick={() => setLocation(`/school-dashboard?school=${row.id}`)}
                                                 >
-                                                    <TableCell className="font-bold text-lg text-muted-foreground">
-                                                        {row.rank}
-                                                    </TableCell>
                                                     <TableCell className="font-medium">
-                                                        {schoolNames[row.schoolId] ?? row.schoolId.slice(0, 8)}
+                                                        {schoolNames[row.id] ?? row.id.slice(0, 8)}
                                                     </TableCell>
                                                     <TableCell className="text-right font-medium">
-                                                        {formatMetric(row.metricKey, row.metricValue)}
+                                                        {BRL(row.revenue)}
                                                     </TableCell>
                                                     <TableCell className="text-right">
-                                                        <VarianceBadge value={row.varianceToNetwork} />
+                                                        {NUM(row.new_enrollments)}
+                                                    </TableCell>
+                                                    <TableCell className="text-right">
+                                                        {PCT(row.retention_rate)}
+                                                    </TableCell>
+                                                    <TableCell className="text-right">
+                                                        {BRL(row.average_ticket)}
+                                                    </TableCell>
+                                                    <TableCell className="text-right">
+                                                        {PCT(row.occupancy_rate)}
                                                     </TableCell>
                                                     <TableCell>
                                                         <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
@@ -612,19 +733,17 @@ export default function ExecDashboardPage() {
                                             variant="ghost"
                                             disabled={page === 0}
                                             onClick={() => setPage((p) => p - 1)}
-                                            data-testid="button-page-prev"
                                         >
                                             <ChevronLeft className="h-4 w-4" />
                                         </Button>
                                         <span className="text-xs text-muted-foreground">
-                                            Página {page + 1}
+                                            Página {page + 1} de {Math.ceil(pivotedSchools.length / PAGE_SIZE)}
                                         </span>
                                         <Button
                                             size="icon"
                                             variant="ghost"
-                                            disabled={comparisons.length < PAGE_SIZE}
+                                            disabled={(page + 1) * PAGE_SIZE >= pivotedSchools.length}
                                             onClick={() => setPage((p) => p + 1)}
-                                            data-testid="button-page-next"
                                         >
                                             <ChevronRight className="h-4 w-4" />
                                         </Button>

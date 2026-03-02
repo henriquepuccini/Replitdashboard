@@ -188,7 +188,7 @@ export const insertAuthUserSyncLogSchema = createInsertSchema(authUserSyncLogs)
 export type InsertAuthUserSyncLog = z.infer<typeof insertAuthUserSyncLogSchema>;
 export type AuthUserSyncLog = typeof authUserSyncLogs.$inferSelect;
 
-export const CONNECTOR_TYPES = ["crm", "finance", "academic"] as const;
+export const CONNECTOR_TYPES = ["crm", "finance", "academic", "google_sheets", "manual_input"] as const;
 export type ConnectorType = (typeof CONNECTOR_TYPES)[number];
 
 export const SYNC_RUN_STATUSES = ["pending", "running", "success", "failed"] as const;
@@ -436,7 +436,7 @@ export const insertConnectorSchema = createInsertSchema(connectors)
   })
   .extend({
     name: z.string().min(1, "Connector name is required"),
-    type: z.enum(CONNECTOR_TYPES),
+    type: z.enum(CONNECTOR_TYPES as unknown as [string, ...string[]]),  // includes google_sheets
     config: z.record(z.unknown()).optional(),
     scheduleCron: z.string().nullable().optional(),
     ownerId: z.string().uuid("Invalid owner ID"),
@@ -660,6 +660,9 @@ export const kpiGoals = pgTable(
     schoolId: uuid("school_id").references(() => schools.id, {
       onDelete: "set null",
     }),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     periodStart: date("period_start").notNull(),
     periodEnd: date("period_end").notNull(),
     target: numeric("target", { precision: 18, scale: 4 }).notNull(),
@@ -680,6 +683,7 @@ export const kpiGoals = pgTable(
       table.periodStart
     ),
     index("idx_kpi_goals_kpi_id").on(table.kpiId),
+    index("idx_kpi_goals_user_id").on(table.userId),
   ]
 );
 
@@ -1182,3 +1186,185 @@ export type IntegrationAlert = typeof integrationAlerts.$inferSelect;
 
 export type InsertAlertNotification = z.infer<typeof insertAlertNotificationSchema>;
 export type AlertNotification = typeof alertNotifications.$inferSelect;
+
+// ─── Manual Inputs ────────────────────────────────────────────────────────────
+
+export const MANUAL_INPUT_KEYS = [
+  "custo_marketing",
+  "capacidade_turma",
+  "receita_prevista",
+  "outros",
+] as const;
+export type ManualInputKey = (typeof MANUAL_INPUT_KEYS)[number] | string;
+
+export const manualInputs = pgTable(
+  "manual_inputs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    schoolId: uuid("school_id").references(() => schools.id, {
+      onDelete: "set null",
+    }),
+    dataReferencia: date("data_referencia").notNull(),
+    chaveMetrica: text("chave_metrica").notNull(),
+    valor: numeric("valor", { precision: 18, scale: 4 }).notNull(),
+    notas: text("notas"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_manual_inputs_school_date").on(table.schoolId, table.dataReferencia),
+    index("idx_manual_inputs_chave").on(table.chaveMetrica),
+    index("idx_manual_inputs_created_by").on(table.createdBy),
+  ]
+);
+
+export const insertManualInputSchema = createInsertSchema(manualInputs)
+  .omit({
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    dataReferencia: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format"),
+    chaveMetrica: z.string().min(1, "Chave de métrica é obrigatória"),
+    valor: z
+      .number({ invalid_type_error: "Valor deve ser um número" })
+      .or(z.string().transform((v) => parseFloat(v)))
+      .refine((v) => !isNaN(Number(v)), { message: "Valor inválido" })
+      .transform((v) => String(v)),
+    notas: z.string().nullable().optional(),
+    createdBy: z.string().uuid("Invalid user ID").nullable().optional(),
+  });
+
+export type InsertManualInput = z.infer<typeof insertManualInputSchema>;
+export type ManualInput = typeof manualInputs.$inferSelect;
+
+// ─── Contas a Receber ─────────────────────────────────────────────────────────
+
+export const CONTA_A_RECEBER_STATUSES = ["open", "paid", "overdue"] as const;
+export type ContaAReceberStatus = (typeof CONTA_A_RECEBER_STATUSES)[number];
+
+export const contasAReceber = pgTable(
+  "contas_a_receber",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    sourceConnectorId: uuid("source_connector_id")
+      .notNull()
+      .references(() => connectors.id, { onDelete: "cascade" }),
+    sourceId: text("source_id").notNull(),
+    schoolId: uuid("school_id").references(() => schools.id, {
+      onDelete: "set null",
+    }),
+    amountDue: numeric("amount_due", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),
+    dueDate: date("due_date"),
+    status: varchar("status", { length: 10 }).notNull().default("open"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    payload: jsonb("payload")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_car_school_status").on(table.schoolId, table.status),
+    index("idx_car_due_date").on(table.dueDate),
+    index("idx_car_source_id").on(table.sourceId),
+    index("idx_car_source_connector_id").on(table.sourceConnectorId),
+  ]
+);
+
+export const insertContaAReceberSchema = createInsertSchema(contasAReceber)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    sourceConnectorId: z.string().uuid("Invalid connector ID"),
+    sourceId: z.string().min(1, "Source ID is required"),
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    amountDue: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v)),
+    dueDate: z.string().nullable().optional(),
+    status: z
+      .enum(CONTA_A_RECEBER_STATUSES)
+      .default("open"),
+  });
+
+export type InsertContaAReceber = z.infer<typeof insertContaAReceberSchema>;
+export type ContaAReceber = typeof contasAReceber.$inferSelect;
+
+// ─── NPS Surveys ──────────────────────────────────────────────────────────────
+
+export const NPS_CATEGORIES = ["promoter", "passive", "detractor"] as const;
+export type NpsCategory = (typeof NPS_CATEGORIES)[number];
+
+export const npsSurveys = pgTable(
+  "nps_surveys",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    enrollmentId: uuid("enrollment_id").references(() => enrollments.id, {
+      onDelete: "set null",
+    }),
+    schoolId: uuid("school_id").references(() => schools.id, {
+      onDelete: "set null",
+    }),
+    score: integer("score").notNull(),
+    comment: text("comment"),
+    surveyDate: date("survey_date").notNull(),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_nps_school_date").on(table.schoolId, table.surveyDate),
+    index("idx_nps_enrollment").on(table.enrollmentId),
+  ]
+);
+
+export const insertNpsSurveySchema = createInsertSchema(npsSurveys)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    enrollmentId: z.string().uuid("Invalid enrollment ID").nullable().optional(),
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    score: z
+      .number({ invalid_type_error: "Score deve ser um número" })
+      .int()
+      .min(0, "Score mínimo é 0")
+      .max(10, "Score máximo é 10"),
+    comment: z.string().nullable().optional(),
+    surveyDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+    createdBy: z.string().uuid("Invalid user ID").nullable().optional(),
+  });
+
+export type InsertNpsSurvey = z.infer<typeof insertNpsSurveySchema>;
+export type NpsSurvey = typeof npsSurveys.$inferSelect;
+
+/** Compute NPS category from a numeric score */
+export function npsCategoryFromScore(score: number): NpsCategory {
+  if (score >= 9) return "promoter";
+  if (score >= 7) return "passive";
+  return "detractor";
+}

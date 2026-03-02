@@ -8,6 +8,7 @@ import {
     useUpdateSchoolKpiGoal,
     exportSchoolDashboard,
 } from "@/hooks/use-school-dashboard";
+import { useSellerRanking } from "@/hooks/use-seller-ranking";
 import { useDashboardFilters } from "@/hooks/use-dashboard-filters";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -59,6 +60,7 @@ import {
     TooltipContent,
     TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { SellerRankingTable } from "@/components/seller-ranking-table";
 import {
     Dialog,
     DialogContent,
@@ -92,6 +94,9 @@ import {
     DollarSign,
     BarChart3,
     Loader2,
+    Activity,
+    Gauge,
+    HeartPulse,
 } from "lucide-react";
 import type { KpiGoal, KpiDefinition } from "@shared/schema";
 
@@ -298,6 +303,10 @@ export default function SchoolDashboardPage() {
         effectiveSchoolId,
         { from: periodFrom, to: periodTo }
     );
+    const { data: sellerRanking, isLoading: sellerRankingLoading } = useSellerRanking(
+        effectiveSchoolId,
+        { from: periodFrom, to: periodTo }
+    );
 
     const updateGoal = useUpdateSchoolKpiGoal(effectiveSchoolId);
     const [editingGoal, setEditingGoal] = useState<KpiGoal | null>(null);
@@ -324,6 +333,17 @@ export default function SchoolDashboardPage() {
     const conversion = latestMetrics["conversion_rate"] ?? null;
     const revenue = latestMetrics["revenue"] ?? null;
     const churn = latestMetrics["churn_rate"] ?? null;
+
+    // Tactical KPIs from kpisData (kpi_values table)
+    const getKpiValue = (key: string) => {
+        if (!kpisData?.values || !kpisData?.definitions) return null;
+        const def = kpisData.definitions.find(d => d.key === key);
+        if (!def) return null;
+        const v = kpisData.values.find(v => v.kpiId === def.id && v.schoolId === effectiveSchoolId);
+        return v ? parseFloat(v.value) : null;
+    };
+    const dso = getKpiValue("dso_days");
+    const nps = getKpiValue("nps_score");
 
     // Chart data: one entry per aggregate date
     const chartData = useMemo(() => {
@@ -528,33 +548,61 @@ export default function SchoolDashboardPage() {
 
                     {/* KPI Cards */}
                     {isLoading ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                            {[1, 2, 3].map((i) => (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+                            {[1, 2, 3, 4, 5, 6].map((i) => (
                                 <Skeleton key={i} className="h-32 w-full rounded-xl" />
                             ))}
                         </div>
                     ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                             <KpiCard
-                                title="Taxa de Conversão"
-                                value={conversion !== null ? PCT(conversion) : "—"}
-                                icon={<BarChart3 className="h-4 w-4" />}
-                                description={conversion === null ? "Sem dados" : undefined}
-                            />
-                            <KpiCard
-                                title="Receita"
+                                title="Faturamento (Receita)"
                                 value={revenue !== null ? BRL(revenue) : "—"}
                                 icon={<DollarSign className="h-4 w-4" />}
                                 description={revenue === null ? "Sem dados" : undefined}
                             />
                             <KpiCard
-                                title="Churn"
-                                value={churn !== null ? PCT(churn) : "—"}
+                                title="Novas Matrículas"
+                                value={latestMetrics["new_enrollments"] !== undefined ? NUM(latestMetrics["new_enrollments"]) : "—"}
                                 icon={<Users className="h-4 w-4" />}
-                                description={churn === null ? "Sem dados" : undefined}
+                                description={latestMetrics["new_enrollments"] === undefined ? "Sem dados" : undefined}
+                            />
+                            <KpiCard
+                                title="Taxa de Retenção"
+                                value={churn !== null ? PCT(1 - churn) : "—"}
+                                icon={<Activity className="h-4 w-4" />}
+                                description={churn === null ? "Sem dados" : "Calculado: 1 - Churn"}
+                            />
+                            <KpiCard
+                                title="Ticket Médio"
+                                value={latestMetrics["average_ticket"] !== undefined ? BRL(latestMetrics["average_ticket"]) : "—"}
+                                icon={<DollarSign className="h-4 w-4" />}
+                                description={latestMetrics["average_ticket"] === undefined ? "Sem dados" : undefined}
+                            />
+                            <KpiCard
+                                title="Taxa de Ocupação"
+                                value={getKpiValue("occupancy_rate") !== null ? PCT(getKpiValue("occupancy_rate")!) : "—"}
+                                icon={<Gauge className="h-4 w-4" />}
+                                description={getKpiValue("occupancy_rate") === null ? "Sem dados" : undefined}
+                            />
+                            <KpiCard
+                                title="NPS"
+                                value={nps !== null ? NUM(nps) : "—"}
+                                icon={<HeartPulse className="h-4 w-4" />}
+                                description={nps === null ? "Sem dados" : undefined}
                             />
                         </div>
                     )}
+
+                    {/* Seller Ranking Table */}
+                    <div className="mt-6">
+                        <SellerRankingTable
+                            data={sellerRanking}
+                            isLoading={sellerRankingLoading}
+                            schoolName={selectedSchoolName}
+                            periodLabel={periodLabel}
+                        />
+                    </div>
 
                     {/* Goal Attainment */}
                     <Card>

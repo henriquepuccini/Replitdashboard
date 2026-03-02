@@ -37,6 +37,12 @@ import {
   type IntegrationAlert,
   type InsertIntegrationAlert,
   type AlertNotification,
+  type ManualInput,
+  type InsertManualInput,
+  type ContaAReceber,
+  type InsertContaAReceber,
+  type NpsSurvey,
+  type InsertNpsSurvey,
   users,
   schools,
   userSchools,
@@ -57,9 +63,12 @@ import {
   connectorSlas,
   integrationAlerts,
   alertNotifications,
+  manualInputs,
+  contasAReceber,
+  npsSurveys,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, isNull } from "drizzle-orm";
+import { eq, and, desc, isNull, gte, lte } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -162,6 +171,28 @@ export interface IStorage {
   upsertConnectorSla(data: InsertConnectorSla): Promise<ConnectorSla>;
   getIntegrationAlerts(limit?: number): Promise<IntegrationAlert[]>;
   updateIntegrationAlert(id: string, data: Partial<InsertIntegrationAlert>): Promise<IntegrationAlert | undefined>;
+
+  getManualInputs(filters?: {
+    schoolId?: string | null;
+    chaveMetrica?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<ManualInput[]>;
+  upsertManualInput(input: InsertManualInput): Promise<ManualInput>;
+  deleteManualInput(id: string): Promise<boolean>;
+
+  upsertContaAReceber(data: InsertContaAReceber): Promise<ContaAReceber>;
+  getContasAReceber(filters?: {
+    schoolId?: string;
+    status?: string;
+  }): Promise<ContaAReceber[]>;
+
+  createNpsSurvey(data: InsertNpsSurvey): Promise<NpsSurvey>;
+  getNpsSurveys(filters?: {
+    schoolId?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<NpsSurvey[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -737,6 +768,121 @@ export class DatabaseStorage implements IStorage {
       .where(eq(integrationAlerts.id, id))
       .returning();
     return updated;
+  }
+
+  async getManualInputs(filters?: {
+    schoolId?: string | null;
+    chaveMetrica?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<ManualInput[]> {
+    const conditions = [];
+    if (filters?.schoolId === null) {
+      conditions.push(isNull(manualInputs.schoolId));
+    } else if (filters?.schoolId) {
+      conditions.push(eq(manualInputs.schoolId, filters.schoolId));
+    }
+    if (filters?.chaveMetrica) {
+      conditions.push(eq(manualInputs.chaveMetrica, filters.chaveMetrica));
+    }
+    if (filters?.startDate) {
+      conditions.push(gte(manualInputs.dataReferencia, filters.startDate));
+    }
+    if (filters?.endDate) {
+      conditions.push(lte(manualInputs.dataReferencia, filters.endDate));
+    }
+
+    const query = db.select().from(manualInputs);
+    if (conditions.length > 0) {
+      return query.where(and(...conditions)).orderBy(desc(manualInputs.dataReferencia));
+    }
+    return query.orderBy(desc(manualInputs.dataReferencia));
+  }
+
+  async upsertManualInput(input: InsertManualInput): Promise<ManualInput> {
+    const [upserted] = await db
+      .insert(manualInputs)
+      .values(input)
+      .onConflictDoUpdate({
+        target: [manualInputs.chaveMetrica, manualInputs.dataReferencia],
+        set: {
+          valor: input.valor,
+          notas: input.notas ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async deleteManualInput(id: string): Promise<boolean> {
+    const result = await db
+      .delete(manualInputs)
+      .where(eq(manualInputs.id, id))
+      .returning();
+    return result.length > 0;
+  }
+
+  async upsertContaAReceber(data: InsertContaAReceber): Promise<ContaAReceber> {
+    const [row] = await db
+      .insert(contasAReceber)
+      .values(data)
+      .onConflictDoUpdate({
+        target: [contasAReceber.sourceConnectorId, contasAReceber.sourceId],
+        set: {
+          amountDue: data.amountDue,
+          dueDate: data.dueDate ?? null,
+          status: data.status ?? "open",
+          paidAt: data.paidAt ?? null,
+          payload: data.payload ?? {},
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return row;
+  }
+
+  async getContasAReceber(filters?: {
+    schoolId?: string;
+    status?: string;
+  }): Promise<ContaAReceber[]> {
+    const conditions = [];
+    if (filters?.schoolId) {
+      conditions.push(eq(contasAReceber.schoolId, filters.schoolId));
+    }
+    if (filters?.status) {
+      conditions.push(eq(contasAReceber.status, filters.status));
+    }
+    const q = db.select().from(contasAReceber);
+    return conditions.length > 0
+      ? q.where(and(...conditions))
+      : q;
+  }
+
+  async createNpsSurvey(data: InsertNpsSurvey): Promise<NpsSurvey> {
+    const [row] = await db.insert(npsSurveys).values(data).returning();
+    return row;
+  }
+
+  async getNpsSurveys(filters?: {
+    schoolId?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<NpsSurvey[]> {
+    const conditions = [];
+    if (filters?.schoolId) {
+      conditions.push(eq(npsSurveys.schoolId, filters.schoolId));
+    }
+    if (filters?.startDate) {
+      conditions.push(gte(npsSurveys.surveyDate, filters.startDate));
+    }
+    if (filters?.endDate) {
+      conditions.push(lte(npsSurveys.surveyDate, filters.endDate));
+    }
+    const q = db.select().from(npsSurveys);
+    return conditions.length > 0
+      ? q.where(and(...conditions)).orderBy(desc(npsSurveys.createdAt))
+      : q.orderBy(desc(npsSurveys.createdAt));
   }
 }
 

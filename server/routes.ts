@@ -215,6 +215,156 @@ export async function registerRoutes(
   );
 
   // =========================================================================
+  // SELLERS (PIPELINE)
+  // =========================================================================
+
+  app.get("/api/sellers/:id/pipeline-metrics", requireAuth, async (req, res) => {
+    try {
+      const sellerId = req.params.id as string;
+      const schoolId = req.query.school_id as string | undefined;
+      const from = req.query.from as string | undefined;
+      const to = req.query.to as string | undefined;
+
+      if (!from || !to) {
+        return res.status(400).json({ message: "from and to dates are required" });
+      }
+
+      if (!isAdmin(req) && !isExec(req)) {
+        if (req.currentUser?.role === "seller" && req.currentUser.id !== sellerId) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+        if (req.currentUser?.role === "director" && schoolId) {
+          const dirOfSchool = await isDirectorOfSchool(req, schoolId);
+          if (!dirOfSchool) return res.status(403).json({ message: "Insufficient permissions" });
+        }
+      }
+
+      const { pool } = await import("./db");
+
+      // 1. Gather Leads and Enrollments
+      const leadsRes = await pool.query(`
+        SELECT COUNT(id) as total_leads
+        FROM leads
+        WHERE seller_id = $1::uuid
+          AND created_at >= $2::date
+          AND created_at <= $3::date
+          ${schoolId ? 'AND school_id = $4::uuid' : ''}
+      `, schoolId ? [sellerId, from, to, schoolId] : [sellerId, from, to]);
+
+      const enrollmentsRes = await pool.query(`
+        SELECT COUNT(e.id) as total_enrollments
+        FROM enrollments e
+        JOIN leads l ON l.id = e.lead_id
+        WHERE l.seller_id = $1::uuid
+          AND e.enrollment_date >= $2::date
+          AND e.enrollment_date <= $3::date
+          ${schoolId ? 'AND e.school_id = $4::uuid' : ''}
+      `, schoolId ? [sellerId, from, to, schoolId] : [sellerId, from, to]);
+
+      const totalLeads = parseInt(leadsRes.rows[0]?.total_leads || "0", 10);
+      const totalEnrollments = parseInt(enrollmentsRes.rows[0]?.total_enrollments || "0", 10);
+      const conversionRate = totalLeads > 0 ? (totalEnrollments / totalLeads) * 100 : 0;
+
+      // 2. Fetch School average conversion
+      let schoolAvgConversion = 0;
+      if (schoolId) {
+        const schoolLeadsRes = await pool.query(`
+          SELECT COUNT(id) as total_leads FROM leads WHERE school_id = $1::uuid AND created_at >= $2::date AND created_at <= $3::date
+        `, [schoolId, from, to]);
+        const schoolEnrRes = await pool.query(`
+          SELECT COUNT(id) as total_enrollments FROM enrollments WHERE school_id = $1::uuid AND enrollment_date >= $2::date AND enrollment_date <= $3::date
+        `, [schoolId, from, to]);
+        const sLeads = parseInt(schoolLeadsRes.rows[0]?.total_leads || "0", 10);
+        const sEnr = parseInt(schoolEnrRes.rows[0]?.total_enrollments || "0", 10);
+        schoolAvgConversion = sLeads > 0 ? (sEnr / sLeads) * 100 : 0;
+      }
+
+      // 3. Goal
+      const goalsRes = await pool.query(`
+        SELECT target FROM kpi_goals 
+        WHERE user_id = $1::uuid 
+          AND period_start >= $2::date 
+          AND period_start <= $3::date
+        ORDER BY created_at DESC LIMIT 1
+      `, [sellerId, from, to]);
+
+      const goal = goalsRes.rows.length > 0 ? parseFloat(goalsRes.rows[0].target) : null;
+
+      // 4. Time per stage
+      const historyRes = await pool.query(`
+        SELECT 
+           l.stage as current_stage,
+           lh.old_data->>'stage' as from_stage,
+           lh.new_data->>'stage' as to_stage,
+           EXTRACT(EPOCH FROM (lh.created_at - l.created_at))/86400 as days_since_creation
+        FROM leads_history lh
+        JOIN leads l ON l.id = lh.lead_id
+        WHERE l.seller_id = $1::uuid
+          AND lh.change_type = 'UPDATE'
+          AND 'stage' = ANY(lh.changed_fields)
+          AND lh.created_at >= $2::date
+          AND lh.created_at <= $3::date
+      `, [sellerId, from, to]);
+
+      const timePerStage: Record<string, number> = {};
+      const stageCounts: Record<string, number> = {};
+
+      historyRes.rows.forEach(row => {
+        const stage = row.to_stage;
+        if (stage) {
+          timePerStage[stage] = (timePerStage[stage] || 0) + parseFloat(row.days_since_creation);
+          stageCounts[stage] = (stageCounts[stage] || 0) + 1;
+        }
+      });
+
+      Object.keys(timePerStage).forEach(k => {
+        timePerStage[k] = parseFloat((timePerStage[k] / stageCounts[k]).toFixed(1));
+      });
+
+      res.json({
+        metrics: {
+          totalLeads,
+          totalEnrollments,
+          conversionRate
+        },
+        schoolAvgConversion,
+        goal,
+        timePerStage
+      });
+
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch seller metrics";
+      res.status(500).json({ message });
+    }
+  });
+
+  app.post("/api/sellers/:id/pipeline-goal", requireAuth, async (req, res) => {
+    try {
+      const sellerId = req.params.id as string;
+      if (req.currentUser?.role === "seller" && req.currentUser.id !== sellerId) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const { target, periodStart, periodEnd } = req.body;
+      if (!target || !periodStart || !periodEnd) {
+        return res.status(400).json({ message: "target, periodStart, and periodEnd are required" });
+      }
+
+      const { pool } = await import("./db");
+      const result = await pool.query(`
+         INSERT INTO kpi_goals (id, kpi_id, user_id, target, period_start, period_end, created_by)
+         VALUES (gen_random_uuid(), (SELECT id FROM kpi_definitions WHERE key='active_students' LIMIT 1), $1::uuid, $2::numeric, $3::date, $4::date, $5::uuid)
+         RETURNING *
+       `, [sellerId, target, periodStart, periodEnd, req.currentUser?.id || null]);
+
+      res.json(result.rows[0]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to save seller goal";
+      res.status(500).json({ message });
+    }
+  });
+
+  // =========================================================================
   // SCHOOLS
   // =========================================================================
 
@@ -247,6 +397,102 @@ export async function registerRoutes(
       res.json({ id: school.id, name: school.name, code: school.code });
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch school" });
+    }
+  });
+
+  app.get("/api/schools/:id/sellers-ranking", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req) && !isExec(req)) {
+        // Also allow directors of this specific school
+        const dirOfSchool = await isDirectorOfSchool(req, req.params.id as string);
+        if (!dirOfSchool) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+      }
+
+      const schoolId = req.params.id as string;
+      const from = req.query.from as string | undefined;
+      const to = req.query.to as string | undefined;
+
+      if (!from || !to) {
+        return res.status(400).json({ message: "from and to dates are required" });
+      }
+
+      const { pool } = await import("./db");
+
+      const result = await pool.query<{
+        seller_id: string;
+        seller_name: string;
+        leads_count: string;
+        enrollments_count: string;
+        revenue: string;
+      }>(
+        `
+        WITH seller_leads AS (
+          SELECT id, seller_id
+          FROM leads
+          WHERE school_id = $1::uuid
+            AND created_at >= $2::date
+            AND created_at <= $3::date
+            AND seller_id IS NOT NULL
+        ),
+        seller_enrollments AS (
+           SELECT e.id, sl.seller_id
+           FROM enrollments e
+           JOIN seller_leads sl ON sl.id = e.lead_id
+           WHERE e.enrollment_date >= $2::date
+             AND e.enrollment_date <= $3::date
+        ),
+        seller_revenue AS (
+           SELECT se.seller_id, COALESCE(SUM(p.amount), 0) as revenue
+           FROM payments p
+           JOIN seller_enrollments se ON se.id = p.enrollment_id
+           WHERE p.status = 'paid'
+             AND p.payment_date >= $2::date
+             AND p.payment_date <= $3::date
+           GROUP BY se.seller_id
+        ),
+        seller_stats AS (
+           SELECT 
+             sl.seller_id,
+             COUNT(DISTINCT sl.id) as leads_count,
+             COUNT(DISTINCT se.id) as enrollments_count
+           FROM seller_leads sl
+           LEFT JOIN seller_enrollments se ON se.seller_id = sl.seller_id
+           GROUP BY sl.seller_id
+        )
+        SELECT 
+           u.id as seller_id,
+           COALESCE(u.full_name, u.email) as seller_name,
+           COALESCE(ss.leads_count, 0) as leads_count,
+           COALESCE(ss.enrollments_count, 0) as enrollments_count,
+           COALESCE(sr.revenue, 0) as revenue
+        FROM users u
+        JOIN seller_stats ss ON ss.seller_id = u.id
+        LEFT JOIN seller_revenue sr ON sr.seller_id = u.id
+        ORDER BY revenue DESC, enrollments_count DESC
+        `,
+        [schoolId, from, to]
+      );
+
+      const ranking = result.rows.map(row => {
+        const enrollments = parseInt(row.enrollments_count || "0", 10);
+        const leads = parseInt(row.leads_count || "0", 10);
+        const revenue = parseFloat(row.revenue || "0");
+        return {
+          sellerId: row.seller_id,
+          sellerName: row.seller_name,
+          enrollments,
+          revenue,
+          conversionRate: leads > 0 ? (enrollments / leads) * 100 : 0,
+          avgTicket: enrollments > 0 ? (revenue / enrollments) : 0
+        };
+      });
+
+      res.json(ranking);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch seller ranking";
+      res.status(500).json({ message });
     }
   });
 
@@ -1816,6 +2062,209 @@ export async function registerRoutes(
       res.status(500).json({ message: "Failed to invoke churn engine" });
     }
   });
+
+  // =========================================================================
+  // MANUAL DATA
+  // =========================================================================
+
+  app.get(
+    "/api/manual-data",
+    requireAuth,
+    requireRole("admin", "director"),
+    async (req, res) => {
+      try {
+        const { schoolId, chaveMetrica, startDate, endDate } = req.query as Record<string, string | undefined>;
+        const inputs = await storage.getManualInputs({
+          schoolId: schoolId || undefined,
+          chaveMetrica: chaveMetrica || undefined,
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
+        });
+        res.json(inputs);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch manual inputs" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/manual-data",
+    requireAuth,
+    requireRole("admin", "director"),
+    async (req, res) => {
+      try {
+        const { insertManualInputSchema } = await import("@shared/schema");
+        const data = insertManualInputSchema.parse({
+          ...req.body,
+          createdBy: req.currentUser!.id,
+        });
+        const input = await storage.upsertManualInput(data);
+        res.status(201).json(input);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.delete(
+    "/api/manual-data/:id",
+    requireAuth,
+    requireRole("admin"),
+    async (req, res) => {
+      try {
+        const deleted = await storage.deleteManualInput(req.params.id as string);
+        if (!deleted) {
+          return res.status(404).json({ message: "Manual input not found" });
+        }
+        res.status(204).send();
+      } catch (error) {
+        res.status(500).json({ message: "Failed to delete manual input" });
+      }
+    }
+  );
+
+  // ── CEO Dashboard KPIs (batch) ──────────────────────────────────────────────
+
+  const CEO_KPI_KEYS = [
+    "active_students",
+    "total_discounts",
+    "estimated_revenue",
+    "occupancy_rate",
+    "contribution_margin",
+    "ltv_cac_ratio",
+    "retention_rate",
+  ];
+
+  app.get(
+    "/api/ceo-kpis",
+    requireAuth,
+    requireRole("admin", "exec", "director"),
+    async (req, res) => {
+      try {
+        const { pool } = await import("./db");
+        const from = req.query.from as string | undefined;
+        const to = req.query.to as string | undefined;
+        const schoolId = req.query.school_id as string | undefined;
+
+        // Build a single query that fetches the latest kpi_values row per CEO KPI key
+        const params: unknown[] = [CEO_KPI_KEYS];
+        let dateFilter = "";
+        if (from) {
+          params.push(from);
+          dateFilter += ` AND kv.period_start >= $${params.length}::date`;
+        }
+        if (to) {
+          params.push(to);
+          dateFilter += ` AND kv.period_end <= $${params.length}::date`;
+        }
+        let schoolFilter = "";
+        if (schoolId) {
+          params.push(schoolId);
+          schoolFilter = `AND kv.school_id = $${params.length}::uuid`;
+        } else {
+          schoolFilter = "AND kv.school_id IS NULL";
+        }
+
+        const result = await pool.query<{
+          kpi_id: string;
+          key: string;
+          name: string;
+          value: string;
+          metadata: Record<string, unknown> | null;
+          computed_at: string;
+        }>(
+          `SELECT DISTINCT ON (kd.key)
+             kv.kpi_definition_id AS kpi_id,
+             kd.key,
+             kd.name,
+             kv.value::text,
+             kv.metadata,
+             kv.computed_at
+           FROM kpi_values kv
+           JOIN kpi_definitions kd ON kd.id = kv.kpi_definition_id
+           WHERE kd.key = ANY($1::text[])
+             ${dateFilter}
+             ${schoolFilter}
+           ORDER BY kd.key, kv.computed_at DESC`,
+          params
+        );
+
+        // Build response map
+        const kpiMap: Record<string, {
+          kpiId: string;
+          key: string;
+          name: string;
+          value: number | null;
+          metadata: Record<string, unknown> | null;
+          computedAt: string | null;
+        }> = {};
+
+        // Initialize all keys (so frontend knows which ones are missing)
+        for (const key of CEO_KPI_KEYS) {
+          kpiMap[key] = { kpiId: "", key, name: key, value: null, metadata: null, computedAt: null };
+        }
+
+        for (const row of result.rows) {
+          kpiMap[row.key] = {
+            kpiId: row.kpi_id,
+            key: row.key,
+            name: row.name,
+            value: parseFloat(row.value),
+            metadata: row.metadata,
+            computedAt: row.computed_at,
+          };
+        }
+
+        res.json(kpiMap);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to fetch CEO KPIs";
+        res.status(500).json({ message });
+      }
+    }
+  );
+
+  // ── NPS Surveys ─────────────────────────────────────────────────────────────
+
+  app.post(
+    "/api/nps",
+    requireAuth,
+    requireRole("admin", "director"),
+    async (req, res) => {
+      try {
+        const { insertNpsSurveySchema } = await import("@shared/schema");
+        const parsed = insertNpsSurveySchema.safeParse({
+          ...req.body,
+          createdBy: req.currentUser!.id,
+          surveyDate: req.body.surveyDate ?? new Date().toISOString().slice(0, 10),
+        });
+        if (!parsed.success) {
+          return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+        }
+        const survey = await storage.createNpsSurvey(parsed.data);
+        res.status(201).json(survey);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to create NPS survey" });
+      }
+    }
+  );
+
+  app.get(
+    "/api/nps",
+    requireAuth,
+    requireRole("admin", "director"),
+    async (req, res) => {
+      try {
+        const surveys = await storage.getNpsSurveys({
+          schoolId: req.query.schoolId as string | undefined,
+          startDate: req.query.startDate as string | undefined,
+          endDate: req.query.endDate as string | undefined,
+        });
+        res.json(surveys);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch NPS surveys" });
+      }
+    }
+  );
 
   return httpServer;
 }

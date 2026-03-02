@@ -22,6 +22,7 @@ import ExecDashboardPage from "@/pages/exec-dashboard";
 import ChurnRulesPage from "@/pages/churn-rules";
 import ChurnEventsPage from "@/pages/churn-events";
 import MonitoringDashboard from "@/pages/monitoring";
+import ManualInputPage from "@/pages/manual-input";
 import NotFound from "@/pages/not-found";
 import { ErrorBoundary } from "@/components/error-boundary";
 
@@ -140,6 +141,14 @@ function Router() {
         <ProtectedRoute allowedRoles={["admin", "ops"]}>
           <AppLayout>
             <MonitoringDashboard />
+          </AppLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/manual-input">
+        <ProtectedRoute allowedRoles={["admin", "director"]}>
+          <AppLayout>
+            <ManualInputPage />
           </AppLayout>
         </ProtectedRoute>
       </Route>
