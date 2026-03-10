@@ -27,6 +27,18 @@ export const USER_ROLES = [
 ] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
+export const CHURN_MOTIVE_CODES = [
+  "adaptation_failure",
+  "relocation",
+  "financial_issues",
+  "transfer",
+  "other",
+] as const;
+export type ChurnMotiveCode = (typeof CHURN_MOTIVE_CODES)[number];
+
+export const ENROLLMENT_STATUSES = ["active", "inactive", "cancelled"] as const;
+export type EnrollmentStatus = (typeof ENROLLMENT_STATUSES)[number];
+
 export const schools = pgTable(
   "schools",
   {
@@ -151,6 +163,60 @@ export type School = typeof schools.$inferSelect;
 
 export type InsertUserSchool = z.infer<typeof insertUserSchoolSchema>;
 export type UserSchool = typeof userSchools.$inferSelect;
+
+export const schoolCapacity = pgTable(
+  "school_capacity",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    schoolId: uuid("school_id")
+      .notNull()
+      .references(() => schools.id, { onDelete: "cascade" }),
+    turma: varchar("turma", { length: 80 }),
+    legalCapacity: integer("legal_capacity"),
+    operationalCapacity: integer("operational_capacity"),
+    effectiveFrom: date("effective_from").notNull().defaultNow(),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_school_capacity_school_id").on(table.schoolId),
+    index("idx_school_capacity_effective_from").on(table.effectiveFrom),
+    uniqueIndex("uq_school_capacity_school_turma_date").on(
+      table.schoolId,
+      table.turma,
+      table.effectiveFrom
+    ),
+  ]
+);
+
+export const insertSchoolCapacitySchema = createInsertSchema(schoolCapacity)
+  .omit({
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    schoolId: z.string().uuid("Invalid school ID"),
+    turma: z.string().max(80).nullable().optional(),
+    legalCapacity: z.number().int().nonnegative().nullable().optional(),
+    operationalCapacity: z.number().int().nonnegative().nullable().optional(),
+    effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format").optional(),
+    notes: z.string().nullable().optional(),
+    createdBy: z.string().uuid("Invalid user ID").nullable().optional(),
+  });
+
+export type InsertSchoolCapacity = z.infer<typeof insertSchoolCapacitySchema>;
+export type SchoolCapacity = typeof schoolCapacity.$inferSelect;
 
 export const SYNC_OPERATIONS = ["INSERT", "UPDATE", "DELETE"] as const;
 export type SyncOperation = (typeof SYNC_OPERATIONS)[number];
@@ -298,6 +364,16 @@ export const syncRuns = pgTable(
   ]
 );
 
+export const LEAD_SOURCES = [
+  "form",
+  "whatsapp",
+  "instagram",
+  "google_ads",
+  "referral",
+  "other",
+] as const;
+export type LeadSource = (typeof LEAD_SOURCES)[number];
+
 export const leads = pgTable(
   "leads",
   {
@@ -318,6 +394,14 @@ export const leads = pgTable(
     status: varchar("status", { length: 50 }).notNull().default("open"),
     lastInteraction: timestamp("last_interaction", { withTimezone: true }),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    // CRM pipeline conversion fields (migration 034)
+    leadSource: varchar("lead_source", { length: 80 }),
+    leadSourceDetail: text("lead_source_detail"),
+    convertedAt: timestamp("converted_at", { withTimezone: true }),
+    convertedEnrollmentId: uuid("converted_enrollment_id").references(
+      () => enrollments.id,
+      { onDelete: "set null" }
+    ),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -399,6 +483,30 @@ export const payments = pgTable(
   ]
 );
 
+// ---------------------------------------------------------------------------
+// Churn Motives — catalog table (seeded by migration 033)
+// ---------------------------------------------------------------------------
+
+export const churnMotives = pgTable(
+  "churn_motives",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    code: varchar("code", { length: 40 }).notNull().unique(),
+    label: text("label").notNull(),
+    description: text("description"),
+    isCritical: boolean("is_critical").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(99),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("idx_churn_motives_code").on(table.code),
+  ]
+);
+
+// ---------------------------------------------------------------------------
+// Enrollments
+// ---------------------------------------------------------------------------
+
 export const enrollments = pgTable(
   "enrollments",
   {
@@ -413,6 +521,15 @@ export const enrollments = pgTable(
     schoolId: uuid("school_id").references(() => schools.id, {
       onDelete: "set null",
     }),
+    // Cancellation / churn fields (migration 033)
+    enrollmentStatus: varchar("enrollment_status", { length: 20 })
+      .notNull()
+      .default("active"),
+    churnMotiveId: uuid("churn_motive_id")
+      .references(() => churnMotives.id, { onDelete: "set null" }),
+    churnNotes: text("churn_notes"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    ltvLost: numeric("ltv_lost", { precision: 18, scale: 4 }).default("0"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -425,6 +542,8 @@ export const enrollments = pgTable(
     index("idx_enrollments_created_at").on(table.createdAt),
     index("idx_enrollments_source_id").on(table.sourceId),
     index("idx_enrollments_source_connector_id").on(table.sourceConnectorId),
+    index("idx_enrollments_status").on(table.enrollmentStatus),
+    index("idx_enrollments_churn_motive").on(table.churnMotiveId),
   ]
 );
 
@@ -499,6 +618,10 @@ export const insertLeadSchema = createInsertSchema(leads)
     status: z.string().max(50).optional(),
     lastInteraction: z.coerce.date().nullable().optional(),
     payload: z.record(z.unknown()),
+    leadSource: z.enum(LEAD_SOURCES).nullable().optional(),
+    leadSourceDetail: z.string().max(500).nullable().optional(),
+    convertedAt: z.coerce.date().nullable().optional(),
+    convertedEnrollmentId: z.string().uuid().nullable().optional(),
   });
 
 export const insertPaymentSchema = createInsertSchema(payments)
@@ -525,6 +648,23 @@ export const insertEnrollmentSchema = createInsertSchema(enrollments)
     sourceId: z.string().min(1, "Source ID is required"),
     payload: z.record(z.unknown()),
     schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    enrollmentStatus: z.enum(ENROLLMENT_STATUSES).optional(),
+    churnMotiveId: z.string().uuid().nullable().optional(),
+    churnNotes: z.string().max(2000).nullable().optional(),
+    cancelledAt: z.coerce.date().nullable().optional(),
+    ltvLost: z.union([z.string(), z.number()]).optional().transform((v) =>
+      v !== undefined ? String(v) : undefined
+    ),
+  });
+
+export const insertChurnMotiveSchema = createInsertSchema(churnMotives)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    code: z.enum(CHURN_MOTIVE_CODES),
+    label: z.string().min(1),
+    description: z.string().nullable().optional(),
+    isCritical: z.boolean().optional(),
+    sortOrder: z.number().int().nonnegative().optional(),
   });
 
 export type InsertConnector = z.infer<typeof insertConnectorSchema>;
@@ -549,6 +689,9 @@ export type Payment = typeof payments.$inferSelect;
 
 export type InsertEnrollment = z.infer<typeof insertEnrollmentSchema>;
 export type Enrollment = typeof enrollments.$inferSelect;
+
+export type InsertChurnMotive = z.infer<typeof insertChurnMotiveSchema>;
+export type ChurnMotive = typeof churnMotives.$inferSelect;
 
 export const KPI_CALC_TYPES = ["sql", "js", "materialized"] as const;
 export type KpiCalcType = (typeof KPI_CALC_TYPES)[number];
@@ -1273,6 +1416,10 @@ export const contasAReceber = pgTable(
     dueDate: date("due_date"),
     status: varchar("status", { length: 10 }).notNull().default("open"),
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    // Installment metadata (added in migration 032)
+    installmentNumber: integer("installment_number"),
+    totalInstallments: integer("total_installments"),
+    originalDueDate: date("original_due_date"),
     payload: jsonb("payload")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -1306,10 +1453,101 @@ export const insertContaAReceberSchema = createInsertSchema(contasAReceber)
     status: z
       .enum(CONTA_A_RECEBER_STATUSES)
       .default("open"),
+    installmentNumber: z.number().int().positive().nullable().optional(),
+    totalInstallments: z.number().int().positive().nullable().optional(),
+    originalDueDate: z.string().nullable().optional(),
   });
 
 export type InsertContaAReceber = z.infer<typeof insertContaAReceberSchema>;
 export type ContaAReceber = typeof contasAReceber.$inferSelect;
+
+// ─── Student Contracts ────────────────────────────────────────────────────────
+// Represents the financial contract per student with explicit discount breakdown.
+// final_value is a GENERATED ALWAYS column in Postgres; Drizzle treats it as
+// a regular numeric field for reads.
+
+export const studentContracts = pgTable(
+  "student_contracts",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    sourceConnectorId: uuid("source_connector_id")
+      .notNull()
+      .references(() => connectors.id, { onDelete: "cascade" }),
+    sourceId: text("source_id").notNull(),
+    schoolId: uuid("school_id").references(() => schools.id, {
+      onDelete: "set null",
+    }),
+    enrollmentId: uuid("enrollment_id").references(() => enrollments.id, {
+      onDelete: "set null",
+    }),
+    studentName: text("student_name"),
+    periodStart: date("period_start"),
+    periodEnd: date("period_end"),
+    // Financial breakdown
+    baseValue: numeric("base_value", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),            // Receita Bruta
+    scholarshipDiscount: numeric("scholarship_discount", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),            // Bolsas, convênios, PROUNI
+    commercialDiscount: numeric("commercial_discount", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),            // Pontualidade, irmãos, negociação
+    // finalValue is a GENERATED ALWAYS column — Drizzle reads it as numeric
+    finalValue: numeric("final_value", { precision: 18, scale: 4 }),
+    installments: integer("installments").notNull().default(1),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_student_contracts_school_period").on(
+      table.schoolId,
+      sql`${table.periodStart} DESC`
+    ),
+    index("idx_student_contracts_enrollment").on(table.enrollmentId),
+    index("idx_student_contracts_source_connector").on(table.sourceConnectorId),
+  ]
+);
+
+export const insertStudentContractSchema = createInsertSchema(studentContracts)
+  .omit({ id: true, finalValue: true, createdAt: true, updatedAt: true })
+  .extend({
+    sourceConnectorId: z.string().uuid("Invalid connector ID"),
+    sourceId: z.string().min(1, "Source ID is required"),
+    schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
+    enrollmentId: z.string().uuid("Invalid enrollment ID").nullable().optional(),
+    studentName: z.string().nullable().optional(),
+    periodStart: z.string().nullable().optional(),
+    periodEnd: z.string().nullable().optional(),
+    baseValue: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v)),
+    scholarshipDiscount: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v))
+      .optional()
+      .default("0"),
+    commercialDiscount: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v))
+      .optional()
+      .default("0"),
+    installments: z.number().int().positive().optional().default(1),
+    payload: z.record(z.unknown()).optional(),
+  });
+
+export type InsertStudentContract = z.infer<typeof insertStudentContractSchema>;
+export type StudentContract = typeof studentContracts.$inferSelect;
 
 // ─── NPS Surveys ──────────────────────────────────────────────────────────────
 

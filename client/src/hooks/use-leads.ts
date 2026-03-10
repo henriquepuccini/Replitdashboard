@@ -156,3 +156,93 @@ export function getStageLabel(stage: string): string {
 export function getStageColor(stage: string): string {
   return PIPELINE_STAGES.find((s) => s.key === stage)?.color || "bg-gray-500";
 }
+
+export interface ConversionFunnelStage {
+  stage: string;
+  label: string;
+  count: number;
+  conversionRate: number;
+  stageDropOffRate: number;
+}
+
+export interface ConversionFunnelResponse {
+  stages: ConversionFunnelStage[];
+  totalLeads: number;
+  totalConverted: number;
+  sourceBreakdown: Record<string, number>;
+}
+
+export interface FunnelFilters {
+  school_id?: string;
+  period_start?: string;
+  period_end?: string;
+}
+
+export function useConversionFunnel(filters: FunnelFilters = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+  const qs = params.toString();
+  const url = `/api/leads/funnel${qs ? `?${qs}` : ""}`;
+
+  return useQuery<ConversionFunnelResponse>({
+    queryKey: ["/api/leads/funnel", filters],
+    queryFn: async () => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      return res.json();
+    },
+  });
+}
+
+export interface PromoteLeadInput {
+  id: string;
+  schoolId?: string;
+  contractValue?: number;
+}
+
+export function usePromoteLead() {
+  return useMutation({
+    mutationFn: async ({ id, ...data }: PromoteLeadInput) => {
+      const res = await apiRequest("POST", `/api/leads/${id}/promote`, data);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw Object.assign(new Error(err.message || "Failed to promote"), { status: res.status, data: err });
+      }
+      return res.json();
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === "/api/leads",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/enrollments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/leads/funnel"] });
+    },
+  });
+}
+
+export interface CreateLeadInput {
+  name: string;
+  email?: string;
+  phone?: string;
+  cpf?: string;
+  schoolId?: string;
+  sellerId?: string;
+  lead_source?: string;
+  lead_source_detail?: string;
+  notes?: string;
+}
+
+export function useCreateLead() {
+  return useMutation({
+    mutationFn: async (data: CreateLeadInput) => {
+      const res = await apiRequest("POST", "/api/leads", data);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === "/api/leads",
+      });
+    },
+  });
+}

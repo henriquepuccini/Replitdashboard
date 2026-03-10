@@ -1,21 +1,20 @@
 import pg from 'pg';
-import fs from 'fs';
 
 const { Pool } = pg;
 const dbUrl = "postgresql://postgres.vrashfbyewynwyvnnrwg:cKAMgYWtdSEs7MqT@aws-0-us-west-2.pooler.supabase.com:5432/postgres";
 
 const pool = new Pool({ connectionString: dbUrl });
 
-async function run() {
+async function verify() {
     try {
-        const sql = fs.readFileSync("./migrations/030_update_school_names.sql", "utf-8");
-        await pool.query(sql);
-        console.log("Migration applied successfully.");
+        const res = await pool.query('SELECT code, name FROM schools ORDER BY code;');
+        console.log("Current Schools in DB:");
+        console.table(res.rows);
     } catch (err) {
-        console.error("Migration failed:", err);
+        console.error("Verification failed:", err);
     } finally {
         process.exit(0);
     }
 }
 
-run();
+verify();

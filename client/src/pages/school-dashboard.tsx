@@ -61,6 +61,9 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { SellerRankingTable } from "@/components/seller-ranking-table";
+import { ChurnMotivesWidget } from "@/components/churn-motives-widget";
+import { ConversionFunnelWidget } from "@/components/conversion-funnel-widget";
+import { CapacityEditor } from "@/components/capacity-editor";
 import {
     Dialog,
     DialogContent,
@@ -541,6 +544,8 @@ export default function SchoolDashboardPage() {
                     <TabsTrigger value="overview" data-testid="tab-overview">Visão Geral</TabsTrigger>
                     <TabsTrigger value="revenue" data-testid="tab-revenue">Receita</TabsTrigger>
                     <TabsTrigger value="goals" data-testid="tab-goals">Metas</TabsTrigger>
+                    <TabsTrigger value="retention" data-testid="tab-retention">Retenção Pedagógica</TabsTrigger>
+                    <TabsTrigger value="capacity" data-testid="tab-capacity">Capacidade</TabsTrigger>
                 </TabsList>
 
                 {/* ── Visão Geral ──────────────────────────────────────────── */}
@@ -601,6 +606,21 @@ export default function SchoolDashboardPage() {
                             isLoading={sellerRankingLoading}
                             schoolName={selectedSchoolName}
                             periodLabel={periodLabel}
+                        />
+                    </div>
+
+                    {/* Conversion Funnel */}
+                    <div className="space-y-2">
+                        <h2 className="text-base font-semibold">Funil de Conversão CRM</h2>
+                        <p className="text-sm text-muted-foreground">
+                            Acompanhe a taxa de conversão de leads em matrículas.
+                        </p>
+                        <ConversionFunnelWidget
+                            schoolId={effectiveSchoolId}
+                            from={periodFrom}
+                            to={periodTo}
+                            periodLabel={periodLabel}
+                            schoolName={selectedSchoolName}
                         />
                     </div>
 
@@ -833,6 +853,28 @@ export default function SchoolDashboardPage() {
                             )}
                         </CardContent>
                     </Card>
+                </TabsContent>
+
+                {/* ── Retenção Pedagógica ───────────────────────────────────── */}
+                <TabsContent value="retention" className="mt-4 space-y-4">
+                    <div>
+                        <h2 className="text-base font-semibold">Retenção Pedagógica</h2>
+                        <p className="text-sm text-muted-foreground mt-0.5">
+                            Análise de cancelamentos por motivo — identifique falhas de adaptação e LTV perdido.
+                        </p>
+                    </div>
+                    <ChurnMotivesWidget
+                        schoolId={effectiveSchoolId}
+                        from={periodFrom}
+                        to={periodTo}
+                        periodLabel={periodLabel}
+                        schoolName={selectedSchoolName}
+                    />
+                </TabsContent>
+
+                {/* ── Capacidade ─────────────────────────────────────────────── */}
+                <TabsContent value="capacity" className="mt-4">
+                    <CapacityEditor schoolId={effectiveSchoolId} />
                 </TabsContent>
             </Tabs>
 

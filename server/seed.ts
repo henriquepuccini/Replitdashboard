@@ -11,12 +11,12 @@ export async function seedDatabase() {
   console.log("Seeding database with initial data...");
 
   const schoolData = [
-    { name: "Escola Alpha - Centro", code: "ESC001", timezone: "America/Sao_Paulo" },
-    { name: "Escola Alpha - Zona Sul", code: "ESC002", timezone: "America/Sao_Paulo" },
-    { name: "Escola Alpha - Zona Norte", code: "ESC003", timezone: "America/Sao_Paulo" },
-    { name: "Escola Alpha - Zona Oeste", code: "ESC004", timezone: "America/Sao_Paulo" },
-    { name: "Escola Alpha - Campinas", code: "ESC005", timezone: "America/Sao_Paulo" },
-    { name: "Escola Alpha - Ribeirão Preto", code: "ESC006", timezone: "America/Sao_Paulo" },
+    { name: "Vila Operária", code: "ESC001", timezone: "America/Sao_Paulo" },
+    { name: "São João", code: "ESC002", timezone: "America/Sao_Paulo" },
+    { name: "Cordeiros", code: "ESC003", timezone: "America/Sao_Paulo" },
+    { name: "Penha", code: "ESC004", timezone: "America/Sao_Paulo" },
+    { name: "Balneário Piçarras", code: "ESC005", timezone: "America/Sao_Paulo" },
+    { name: "Centro Itajaí", code: "ESC006", timezone: "America/Sao_Paulo" },
   ];
 
   const insertedSchools = await db.insert(schools).values(schoolData).returning();
@@ -25,7 +25,7 @@ export async function seedDatabase() {
     .insert(users)
     .values({
       email: "admin@placeholder.local",
-      fullName: "Admin Placeholder",
+      fullName: "Administrador",
       role: "admin",
       preferredLanguage: "pt-BR",
       isActive: true,
@@ -36,7 +36,7 @@ export async function seedDatabase() {
     .insert(users)
     .values({
       email: "director@placeholder.local",
-      fullName: "Director Placeholder",
+      fullName: "Diretoria",
       role: "director",
       schoolId: insertedSchools[0].id,
       preferredLanguage: "pt-BR",
@@ -48,7 +48,7 @@ export async function seedDatabase() {
     .insert(users)
     .values({
       email: "seller@placeholder.local",
-      fullName: "Seller Placeholder",
+      fullName: "Operação",
       role: "seller",
       schoolId: insertedSchools[0].id,
       preferredLanguage: "pt-BR",
@@ -60,7 +60,7 @@ export async function seedDatabase() {
     .insert(users)
     .values({
       email: "exec@placeholder.local",
-      fullName: "Executive Placeholder",
+      fullName: "Coordenação",
       role: "exec",
       preferredLanguage: "pt-BR",
       isActive: true,
@@ -71,7 +71,7 @@ export async function seedDatabase() {
     .insert(users)
     .values({
       email: "finance@placeholder.local",
-      fullName: "Finance Placeholder",
+      fullName: "Financeiro",
       role: "finance",
       preferredLanguage: "pt-BR",
       isActive: true,

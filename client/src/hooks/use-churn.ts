@@ -110,3 +110,85 @@ export function useRunChurnRule() {
         }
     });
 }
+
+// ─── Churn Motives (migration 033) ────────────────────────────────────────────
+
+export interface ChurnMotiveCatalog {
+    id: string;
+    code: string;
+    label: string;
+    description: string | null;
+    isCritical: boolean;
+    sortOrder: number;
+}
+
+export interface ChurnBreakdownItem {
+    motiveId: string | null;
+    code: string;
+    label: string;
+    isCritical: boolean;
+    count: number;
+    ltvLostTotal: number;
+}
+
+export interface ChurnBreakdown {
+    breakdown: ChurnBreakdownItem[];
+    totalCancellations: number;
+    adaptationRate: number;
+}
+
+/** Fetch the full churn motive catalog (5 preset categories). */
+export function useChurnMotives() {
+    return useQuery<ChurnMotiveCatalog[]>({
+        queryKey: ["/api/churn-motives"],
+    });
+}
+
+/** Breakdown of cancellations by motive, optionally scoped to a school and period. */
+export function useChurnBreakdown(params?: {
+    schoolId?: string;
+    from?: string;
+    to?: string;
+}) {
+    const qs = new URLSearchParams();
+    if (params?.schoolId) qs.append("school_id", params.schoolId);
+    if (params?.from) qs.append("from", params.from);
+    if (params?.to) qs.append("to", params.to);
+
+    return useQuery<ChurnBreakdown>({
+        queryKey: ["/api/churn-motives/breakdown", params],
+        queryFn: async () => {
+            const res = await fetch(`/api/churn-motives/breakdown?${qs.toString()}`);
+            if (!res.ok) throw new Error("Failed to fetch churn breakdown");
+            return res.json();
+        },
+        enabled: !!params?.schoolId,
+    });
+}
+
+/** Cancel an enrollment and record the motive. LTV lost is auto-computed server-side. */
+export function useCancelEnrollment() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async ({
+            enrollmentId,
+            churnMotiveId,
+            churnNotes,
+        }: {
+            enrollmentId: string;
+            churnMotiveId?: string;
+            churnNotes?: string;
+        }) => {
+            const res = await fetch(`/api/enrollments/${enrollmentId}/cancel`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ churnMotiveId, churnNotes }),
+            });
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/churn-motives/breakdown"] });
+        },
+    });
+}

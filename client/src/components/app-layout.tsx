@@ -147,13 +147,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       title: "Regras Churn",
       url: "/churn-rules",
       icon: ShieldAlert,
-      visible: isAdmin || isDirector || isOps || isAnalytics,
+      visible: isAdmin,
     },
     {
       title: "Auditoria Churn",
       url: "/churn-events",
       icon: Activity,
-      visible: isAdmin || isDirector || isOps || isAnalytics,
+      visible: isAdmin,
     },
     {
       title: "Monitoramento",

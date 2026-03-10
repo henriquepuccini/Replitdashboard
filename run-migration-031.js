@@ -8,9 +8,9 @@ const pool = new Pool({ connectionString: dbUrl });
 
 async function run() {
     try {
-        const sql = fs.readFileSync("./migrations/030_update_school_names.sql", "utf-8");
+        const sql = fs.readFileSync("./migrations/031_rename_placeholder_users.sql", "utf-8");
         await pool.query(sql);
-        console.log("Migration applied successfully.");
+        console.log("Migration 031 applied successfully.");
     } catch (err) {
         console.error("Migration failed:", err);
     } finally {

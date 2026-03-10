@@ -43,6 +43,8 @@ import {
   type InsertContaAReceber,
   type NpsSurvey,
   type InsertNpsSurvey,
+  type SchoolCapacity,
+  type InsertSchoolCapacity,
   users,
   schools,
   userSchools,
@@ -66,6 +68,7 @@ import {
   manualInputs,
   contasAReceber,
   npsSurveys,
+  schoolCapacity,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, isNull, gte, lte } from "drizzle-orm";
@@ -193,6 +196,11 @@ export interface IStorage {
     startDate?: string;
     endDate?: string;
   }): Promise<NpsSurvey[]>;
+
+  getSchoolCapacities(schoolId: string): Promise<SchoolCapacity[]>;
+  createSchoolCapacity(data: InsertSchoolCapacity): Promise<SchoolCapacity>;
+  updateSchoolCapacity(id: string, data: Partial<InsertSchoolCapacity>): Promise<SchoolCapacity | undefined>;
+  deleteSchoolCapacity(id: string): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -883,6 +891,36 @@ export class DatabaseStorage implements IStorage {
     return conditions.length > 0
       ? q.where(and(...conditions)).orderBy(desc(npsSurveys.createdAt))
       : q.orderBy(desc(npsSurveys.createdAt));
+  }
+
+  async getSchoolCapacities(schoolId: string): Promise<SchoolCapacity[]> {
+    return db
+      .select()
+      .from(schoolCapacity)
+      .where(eq(schoolCapacity.schoolId, schoolId))
+      .orderBy(desc(schoolCapacity.effectiveFrom));
+  }
+
+  async createSchoolCapacity(data: InsertSchoolCapacity): Promise<SchoolCapacity> {
+    const [row] = await db.insert(schoolCapacity).values(data).returning();
+    return row;
+  }
+
+  async updateSchoolCapacity(id: string, data: Partial<InsertSchoolCapacity>): Promise<SchoolCapacity | undefined> {
+    const [row] = await db
+      .update(schoolCapacity)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(schoolCapacity.id, id))
+      .returning();
+    return row;
+  }
+
+  async deleteSchoolCapacity(id: string): Promise<boolean> {
+    const result = await db
+      .delete(schoolCapacity)
+      .where(eq(schoolCapacity.id, id))
+      .returning();
+    return result.length > 0;
   }
 }
 

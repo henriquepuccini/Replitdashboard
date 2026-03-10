@@ -9,6 +9,7 @@ import {
   insertConnectorMappingSchema,
   insertSyncRunSchema,
   insertRawIngestFileSchema,
+  insertSchoolCapacitySchema,
   type SyncOperation,
 } from "@shared/schema";
 import { ZodError } from "zod";
@@ -368,10 +369,10 @@ export async function registerRoutes(
   // SCHOOLS
   // =========================================================================
 
-  app.get("/api/schools", requireAuth, async (req, res) => {
+  app.get("/api/schools", async (req, res) => {
     try {
       const allSchools = await storage.getSchools();
-      if (hasElevatedRole(req)) {
+      if (req.currentUser && hasElevatedRole(req)) {
         return res.json(allSchools);
       }
       const minimal = allSchools.map((s) => ({
@@ -548,6 +549,100 @@ export async function registerRoutes(
         res.status(204).send();
       } catch (error) {
         res.status(500).json({ message: "Failed to delete school" });
+      }
+    }
+  );
+
+  // =========================================================================
+  // SCHOOL CAPACITY
+  // =========================================================================
+
+  app.get("/api/schools/:id/capacity", requireAuth, async (req, res) => {
+    try {
+      const schoolId = req.params.id as string;
+      const isAdminOrExec = isAdmin(req) || isExec(req);
+      const isDirector = await isDirectorOfSchool(req, schoolId);
+
+      // Anyone belonging to the school or with elevated access can view capacities
+      const userSchools = await getUserSchoolIds(req);
+      const isMember = userSchools.includes(schoolId);
+
+      if (!isAdminOrExec && !isDirector && !isMember) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const rows = await storage.getSchoolCapacities(schoolId);
+      res.json(rows);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch capacities" });
+    }
+  });
+
+  app.post(
+    "/api/schools/:id/capacity",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const schoolId = req.params.id as string;
+        if (!isAdmin(req)) {
+          const isDirector = await isDirectorOfSchool(req, schoolId);
+          if (!isDirector) {
+            return res.status(403).json({ message: "Insufficient permissions" });
+          }
+        }
+
+        const data = insertSchoolCapacitySchema.parse({
+          ...req.body,
+          schoolId,
+          createdBy: req.currentUser!.id
+        });
+
+        const cap = await storage.createSchoolCapacity(data);
+        res.status(201).json(cap);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.patch(
+    "/api/schools/:id/capacity/:capId",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const schoolId = req.params.id as string;
+        if (!isAdmin(req)) {
+          const isDirector = await isDirectorOfSchool(req, schoolId);
+          if (!isDirector) {
+            return res.status(403).json({ message: "Insufficient permissions" });
+          }
+        }
+
+        const data = insertSchoolCapacitySchema.partial().parse(req.body);
+        const cap = await storage.updateSchoolCapacity(req.params.capId as string, data);
+        if (!cap) {
+          return res.status(404).json({ message: "Capacity not found" });
+        }
+        res.json(cap);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.delete(
+    "/api/schools/:id/capacity/:capId",
+    requireAuth,
+    requireRole("admin"),
+    async (req, res) => {
+      try {
+        const deleted = await storage.deleteSchoolCapacity(req.params.capId as string);
+        if (!deleted) {
+          return res.status(404).json({ message: "Capacity not found" });
+        }
+        res.status(204).send();
+      } catch (error) {
+        res.status(500).json({ message: "Failed to delete capacity" });
       }
     }
   );
@@ -1316,6 +1411,289 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update lead" });
+    }
+  });
+
+  // =========================================================================
+  // LEADS — WEBHOOK INGEST (unauthenticated, HMAC-protected)
+  // =========================================================================
+
+  app.post("/api/webhooks/leads", async (req, res) => {
+    try {
+      const secret = process.env.WEBHOOK_SECRET;
+      if (!secret) {
+        return res.status(503).json({ message: "Webhook not configured" });
+      }
+
+      // Verify HMAC-SHA256 signature from header X-Webhook-Signature: sha256=<hex>
+      const sigHeader = req.headers["x-webhook-signature"] as string | undefined;
+      if (!sigHeader) {
+        return res.status(401).json({ message: "Missing signature" });
+      }
+      const crypto = await import("crypto");
+      const rawBody = JSON.stringify(req.body);
+      const expected = "sha256=" + crypto
+        .createHmac("sha256", secret)
+        .update(rawBody)
+        .digest("hex");
+      const sig = Buffer.from(sigHeader);
+      const exp = Buffer.from(expected);
+      if (sig.length !== exp.length || !crypto.timingSafeEqual(sig, exp)) {
+        return res.status(401).json({ message: "Invalid signature" });
+      }
+
+      // Map incoming fields to lead payload
+      const {
+        name, email, phone, cpf, school_id, seller_id,
+        lead_source, lead_source_detail, source,
+        ...rest
+      } = req.body as Record<string, unknown>;
+
+      // Find the webhook connector (use first 'crm' connector as service-level connector)
+      const connectors = await storage.getConnectors();
+      const webhookConnector = connectors.find((c) => c.type === "crm") ?? connectors[0];
+      if (!webhookConnector) {
+        return res.status(503).json({ message: "No connector configured for webhook" });
+      }
+
+      const payload: Record<string, unknown> = {
+        ...(typeof rest === "object" ? rest : {}),
+        name, email, phone, cpf, source: source ?? lead_source,
+      };
+      // Remove undefined keys
+      for (const k of Object.keys(payload)) {
+        if (payload[k] === undefined) delete payload[k];
+      }
+
+      const sourceId = `webhook-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      const lead = await storage.upsertLead({
+        sourceConnectorId: webhookConnector.id,
+        sourceId,
+        schoolId: typeof school_id === "string" ? school_id : null,
+        sellerId: typeof seller_id === "string" ? seller_id : null,
+        stage: "new",
+        status: "open",
+        payload,
+        leadSource: (lead_source as any) ?? null,
+        leadSourceDetail: typeof lead_source_detail === "string" ? lead_source_detail : null,
+      });
+
+      res.status(201).json({ id: lead.id, sourceId: lead.sourceId });
+    } catch (error) {
+      console.error("Webhook lead ingest error:", error);
+      res.status(500).json({ message: "Failed to ingest lead" });
+    }
+  });
+
+  // =========================================================================
+  // LEADS — MANUAL CREATION (admin/ops)
+  // =========================================================================
+
+  app.post("/api/leads", requireAuth, requireRole("admin", "ops"), async (req, res) => {
+    try {
+      const connectorsList = await storage.getConnectors();
+      const crmConnector = connectorsList.find((c) => c.type === "crm") ?? connectorsList[0];
+      if (!crmConnector) {
+        return res.status(503).json({ message: "No connector available" });
+      }
+
+      const {
+        name, email, phone, cpf, schoolId, sellerId,
+        lead_source, lead_source_detail, notes,
+      } = req.body as Record<string, unknown>;
+
+      const payload: Record<string, unknown> = { name, email, phone, cpf, notes };
+      for (const k of Object.keys(payload)) {
+        if (payload[k] === undefined) delete payload[k];
+      }
+
+      const sourceId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      const lead = await storage.upsertLead({
+        sourceConnectorId: crmConnector.id,
+        sourceId,
+        schoolId: typeof schoolId === "string" ? schoolId : null,
+        sellerId: typeof sellerId === "string" ? sellerId : null,
+        stage: "new",
+        status: "open",
+        payload,
+        leadSource: (lead_source as any) ?? null,
+        leadSourceDetail: typeof lead_source_detail === "string" ? lead_source_detail : null,
+      });
+
+      res.status(201).json(lead);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create lead" });
+    }
+  });
+
+  // =========================================================================
+  // LEADS — PROMOTE TO ENROLLMENT (admin, finance, ops)
+  // =========================================================================
+
+  app.post("/api/leads/:id/promote", requireAuth, async (req, res) => {
+    try {
+      const userRole = req.currentUser!.role;
+      if (!["admin", "finance", "ops"].includes(userRole)) {
+        return res.status(403).json({ message: "Insufficient permissions — admin, finance or ops required" });
+      }
+
+      const leadId = req.params.id as string;
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Already converted?
+      if ((lead as any).convertedEnrollmentId) {
+        return res.status(409).json({
+          message: "Lead already converted",
+          enrollmentId: (lead as any).convertedEnrollmentId,
+        });
+      }
+
+      // Duplicate check: look for existing enrollments with same email or CPF
+      const p = lead.payload as Record<string, unknown>;
+      const email = String(p.email || "").toLowerCase().trim();
+      const cpf = String(p.cpf || "").replace(/\D/g, "");
+
+      if (email || cpf) {
+        const allEnrollments = await storage.getEnrollments();
+        const duplicate = allEnrollments.find((e) => {
+          const ep = e.payload as Record<string, unknown>;
+          const eEmail = String(ep.email || "").toLowerCase().trim();
+          const eCpf = String(ep.cpf || "").replace(/\D/g, "");
+          return (email && eEmail === email) || (cpf && eCpf === cpf && cpf.length >= 11);
+        });
+        if (duplicate) {
+          return res.status(409).json({
+            message: "Duplicate: enrollment already exists for this email/CPF",
+            enrollmentId: duplicate.id,
+          });
+        }
+      }
+
+      // Find a connector to associate the new enrollment with
+      const connectorsList = await storage.getConnectors();
+      const crmConnector = connectorsList.find((c) => c.type === "crm") ?? connectorsList[0];
+      if (!crmConnector) {
+        return res.status(503).json({ message: "No connector available" });
+      }
+
+      const { schoolId, contractValue } = req.body as { schoolId?: string; contractValue?: number };
+      const effectiveSchoolId = schoolId ?? lead.schoolId ?? null;
+
+      const enrollmentPayload: Record<string, unknown> = {
+        ...p,
+        promoted_from_lead_id: lead.id,
+        promoted_by: req.currentUser!.id,
+        promoted_at: new Date().toISOString(),
+        contract_value: contractValue ?? null,
+      };
+
+      const sourceId = `lead-${lead.id}`;
+      const enrollment = await storage.upsertEnrollment({
+        sourceConnectorId: crmConnector.id,
+        sourceId,
+        schoolId: effectiveSchoolId,
+        payload: enrollmentPayload,
+        enrollmentStatus: "active",
+      });
+
+      // Mark lead as converted
+      await storage.updateLead(leadId, {
+        stage: "won",
+        status: "closed",
+        convertedAt: new Date(),
+        convertedEnrollmentId: enrollment.id,
+        lastInteraction: new Date().toISOString(),
+      } as any);
+
+      res.json({ enrollment, leadId });
+    } catch (error) {
+      console.error("Lead promote error:", error);
+      res.status(500).json({ message: "Failed to promote lead" });
+    }
+  });
+
+  // =========================================================================
+  // LEADS — CONVERSION FUNNEL AGGREGATION
+  // =========================================================================
+
+  app.get("/api/leads/funnel", requireAuth, async (req, res) => {
+    try {
+      if (!canViewNormalizedData(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      let allLeads = await storage.getLeads();
+
+      // Scope by role
+      const userRole = req.currentUser!.role;
+      if (userRole === "seller") {
+        allLeads = allLeads.filter((l) => l.sellerId === req.currentUser!.id);
+      } else if (!["admin", "exec", "ops"].includes(userRole)) {
+        const schoolIds = getUserSchoolIds(req);
+        allLeads = allLeads.filter((l) => l.schoolId && schoolIds.includes(l.schoolId));
+      }
+
+      // Optional filters
+      const { school_id, period_start, period_end } = req.query;
+      if (school_id) allLeads = allLeads.filter((l) => l.schoolId === school_id);
+      if (period_start) {
+        const start = new Date(period_start as string);
+        allLeads = allLeads.filter((l) => new Date(l.createdAt) >= start);
+      }
+      if (period_end) {
+        const end = new Date(period_end as string);
+        allLeads = allLeads.filter((l) => new Date(l.createdAt) <= end);
+      }
+
+      const FUNNEL_STAGES = ["new", "contacted", "qualified", "proposal", "negotiation", "won"];
+      const STAGE_LABELS: Record<string, string> = {
+        new: "Novo",
+        contacted: "Contatado",
+        qualified: "Qualificado",
+        proposal: "Proposta",
+        negotiation: "Negociação",
+        won: "Ganho",
+      };
+
+      // Count leads that have reached each stage (at or beyond in funnel order)
+      const stageCounts = FUNNEL_STAGES.map((stage) => ({
+        stage,
+        label: STAGE_LABELS[stage],
+        count: allLeads.filter(
+          (l) => FUNNEL_STAGES.indexOf(l.stage) >= FUNNEL_STAGES.indexOf(stage)
+        ).length,
+      }));
+
+      const stages = stageCounts.map((s, i) => ({
+        ...s,
+        conversionRate: i === 0
+          ? 100
+          : stageCounts[0].count > 0
+            ? parseFloat(((s.count / stageCounts[0].count) * 100).toFixed(1))
+            : 0,
+        stageDropOffRate: i === 0 || stageCounts[i - 1].count === 0
+          ? 0
+          : parseFloat((((stageCounts[i - 1].count - s.count) / stageCounts[i - 1].count) * 100).toFixed(1)),
+      }));
+
+      // Source breakdown
+      const sourceBreakdown: Record<string, number> = {};
+      for (const lead of allLeads) {
+        const src = (lead as any).leadSource ?? "unknown";
+        sourceBreakdown[src] = (sourceBreakdown[src] ?? 0) + 1;
+      }
+
+      res.json({
+        stages,
+        totalLeads: allLeads.length,
+        totalConverted: stageCounts[stageCounts.length - 1].count,
+        sourceBreakdown,
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to compute funnel" });
     }
   });
 
@@ -2265,6 +2643,169 @@ export async function registerRoutes(
       }
     }
   );
+
+  // =========================================================================
+  // CHURN MOTIVES (migration 033)
+  // =========================================================================
+
+  // List all churn motive categories
+  app.get("/api/churn-motives", requireAuth, async (_req, res) => {
+    try {
+      const { pool } = await import("./db");
+      const result = await pool.query(
+        `SELECT id, code, label, description, is_critical AS "isCritical", sort_order AS "sortOrder"
+         FROM public.churn_motives
+         ORDER BY sort_order ASC`
+      );
+      res.json(result.rows);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch churn motives" });
+    }
+  });
+
+  // Breakdown of cancellation motives for a school and period
+  // GET /api/churn-motives/breakdown?school_id=&from=&to=
+  app.get("/api/churn-motives/breakdown", requireAuth, async (req, res) => {
+    try {
+      const schoolId = req.query.school_id as string | undefined;
+      const from = req.query.from as string | undefined;
+      const to = req.query.to as string | undefined;
+
+      if (!isAdmin(req) && !isExec(req)) {
+        if (schoolId) {
+          const dirOfSchool = await isDirectorOfSchool(req, schoolId);
+          if (!dirOfSchool) {
+            return res.status(403).json({ message: "Insufficient permissions" });
+          }
+        } else {
+          return res.status(403).json({ message: "school_id required for non-admin users" });
+        }
+      }
+
+      const { pool } = await import("./db");
+
+      const params: unknown[] = [];
+      const conditions: string[] = ["e.enrollment_status = 'cancelled'"];
+      if (schoolId) { params.push(schoolId); conditions.push(`e.school_id = $${params.length}::uuid`); }
+      if (from) { params.push(from); conditions.push(`e.cancelled_at >= $${params.length}::date`); }
+      if (to) { params.push(to); conditions.push(`e.cancelled_at <= ($${params.length}::date + interval '1 day')`); }
+
+      const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+      const result = await pool.query<{
+        motiveId: string | null;
+        code: string;
+        label: string;
+        isCritical: boolean;
+        count: string;
+        ltvLostTotal: string;
+      }>(
+        `SELECT
+           cm.id          AS "motiveId",
+           COALESCE(cm.code, 'unclassified')    AS code,
+           COALESCE(cm.label, 'Sem classificação') AS label,
+           COALESCE(cm.is_critical, false)       AS "isCritical",
+           COUNT(e.id)::text                     AS count,
+           COALESCE(SUM(e.ltv_lost), 0)::text   AS "ltvLostTotal"
+         FROM public.enrollments e
+         LEFT JOIN public.churn_motives cm ON cm.id = e.churn_motive_id
+         ${whereClause}
+         GROUP BY cm.id, cm.code, cm.label, cm.is_critical
+         ORDER BY COUNT(e.id) DESC`,
+        params
+      );
+
+      const breakdown = result.rows.map((r) => ({
+        motiveId: r.motiveId,
+        code: r.code,
+        label: r.label,
+        isCritical: r.isCritical,
+        count: parseInt(r.count, 10),
+        ltvLostTotal: parseFloat(r.ltvLostTotal),
+      }));
+
+      const totalCancellations = breakdown.reduce((sum, r) => sum + r.count, 0);
+      const adaptationRow = breakdown.find((r) => r.code === "adaptation_failure");
+      const adaptationRate = totalCancellations > 0
+        ? Math.round(((adaptationRow?.count ?? 0) / totalCancellations) * 100 * 100) / 100
+        : 0;
+
+      res.json({ breakdown, totalCancellations, adaptationRate });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch breakdown";
+      res.status(500).json({ message });
+    }
+  });
+
+  // Cancel an enrollment and record the motive + auto-compute ltv_lost
+  // PATCH /api/enrollments/:id/cancel
+  app.patch("/api/enrollments/:id/cancel", requireAuth, async (req, res) => {
+    try {
+      const enrollmentId = req.params.id as string;
+      const { churnMotiveId, churnNotes } = req.body as {
+        churnMotiveId?: string;
+        churnNotes?: string;
+      };
+
+      // Only admins and directors can cancel enrollments
+      if (!isAdmin(req) && !isExec(req)) {
+        const { pool: _pool } = await import("./db");
+        // Fetch enrollment's school to check director access
+        const enrRes = await _pool.query<{ school_id: string }>(
+          `SELECT school_id FROM public.enrollments WHERE id = $1::uuid LIMIT 1`,
+          [enrollmentId]
+        );
+        if (!enrRes.rows.length) {
+          return res.status(404).json({ message: "Enrollment not found" });
+        }
+        const schoolId = enrRes.rows[0].school_id;
+        const dirOfSchool = await isDirectorOfSchool(req, schoolId);
+        if (!dirOfSchool) {
+          return res.status(403).json({ message: "Insufficient permissions" });
+        }
+      }
+
+      const { pool } = await import("./db");
+
+      // Look up ltv_lost from student_contracts using source_id cross-reference
+      const ltvRes = await pool.query<{ final_value: string }>(
+        `SELECT sc.final_value
+         FROM public.student_contracts sc
+         JOIN public.enrollments e ON e.source_id = sc.source_id
+         WHERE e.id = $1::uuid
+         LIMIT 1`,
+        [enrollmentId]
+      );
+      const ltvLost = ltvRes.rows.length > 0
+        ? parseFloat(ltvRes.rows[0].final_value ?? "0")
+        : 0;
+
+      const result = await pool.query(
+        `UPDATE public.enrollments
+         SET enrollment_status = 'cancelled',
+             churn_motive_id   = $2::uuid,
+             churn_notes       = $3,
+             cancelled_at      = now(),
+             ltv_lost          = $4,
+             updated_at        = now()
+         WHERE id = $1::uuid
+           AND enrollment_status <> 'cancelled'
+         RETURNING *`,
+        [enrollmentId, churnMotiveId ?? null, churnNotes ?? null, ltvLost]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          message: "Enrollment not found or already cancelled",
+        });
+      }
+
+      res.json({ enrollment: result.rows[0], ltvLost });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to cancel enrollment";
+      res.status(500).json({ message });
+    }
+  });
 
   return httpServer;
 }

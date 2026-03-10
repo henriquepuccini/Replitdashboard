@@ -56,6 +56,47 @@ async function manualSum(
   return parseFloat(r.rows[0]?.total ?? "0");
 }
 
+/** 
+ * Gets combined operational and legal capacity across all turmas for a given school/network 
+ * using the latest effective_from date <= periodEnd.
+ */
+async function getCapacities(
+  pool: Pool,
+  periodEnd: string,
+  schoolId: string | null
+): Promise<{ operational: number; legal: number } | null> {
+  const params: unknown[] = [periodEnd];
+  const sf = schoolId
+    ? (params.push(schoolId), `AND school_id = $2::uuid`)
+    : "AND school_id IS NULL";
+
+  const result = await pool.query<{ count: string; op_total: string; leg_total: string }>(
+    `WITH latest AS (
+       SELECT DISTINCT ON (COALESCE(turma, '')) 
+         operational_capacity, 
+         legal_capacity
+       FROM public.school_capacity
+       WHERE effective_from <= $1::date
+         ${sf}
+       ORDER BY COALESCE(turma, ''), effective_from DESC
+     )
+     SELECT 
+       COUNT(*)::text AS count,
+       COALESCE(SUM(operational_capacity), 0)::text AS op_total,
+       COALESCE(SUM(legal_capacity), 0)::text AS leg_total
+     FROM latest`,
+    params
+  );
+
+  if (parseInt(result.rows[0]?.count ?? "0", 10) === 0) {
+    return null;
+  }
+  return {
+    operational: parseFloat(result.rows[0]?.op_total ?? "0"),
+    legal: parseFloat(result.rows[0]?.leg_total ?? "0"),
+  };
+}
+
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
 const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
@@ -270,13 +311,13 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
   },
 
   /**
-   * Taxa de Ocupação
-   * (active_students / capacidade_turma) × 100.
-   * Capacity comes from manual_inputs.chave_metrica = 'capacidade_turma'.
+   * Taxa de Ocupação (Real / Genérica)
+   * (active_students / operational_capacity) × 100.
+   * Prioritizes school_capacity table over manual_inputs.
    */
   occupancy_rate: {
     description:
-      "Taxa de ocupação: alunos ativos / capacidade total (%) — capacidade via manual_inputs",
+      "Taxa de ocupação: alunos ativos / capacidade real (%) — prioriza school_capacity (operacional), fallback manual_inputs",
     fn: async (ctx) => {
       const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
       const sf = schoolClause(ctx.schoolId, params);
@@ -303,18 +344,159 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const ts = parseInt(studentsResult.rows[0]?.total ?? "0", 10);
       const students = ds > 0 ? ds : ts;
 
-      const capacity = await manualSum(
-        ctx.pool,
-        "capacidade_turma",
-        ctx.periodStart,
-        ctx.periodEnd,
-        ctx.schoolId
-      );
+      const caps = await getCapacities(ctx.pool, ctx.periodEnd, ctx.schoolId);
+
+      let capacity = caps?.operational;
+      let usingFallback = false;
+
+      if (capacity === undefined || capacity === null) {
+        usingFallback = true;
+        capacity = await manualSum(
+          ctx.pool,
+          "capacidade_turma",
+          ctx.periodStart,
+          ctx.periodEnd,
+          ctx.schoolId
+        );
+      }
 
       const rate = capacity > 0 ? (students / capacity) * 100 : 0;
       return {
         value: Math.round(rate * 100) / 100,
-        metadata: { students, capacity, ratePct: rate },
+        metadata: { students, capacity, ratePct: rate, usingFallback },
+      };
+    },
+  },
+
+  /**
+   * Taxa de Ocupação Operacional (Strict)
+   * (active_students / operational_capacity) × 100.
+   */
+  operational_occupancy_rate: {
+    description:
+      "Taxa de ocupação operacional: alunos ativos / capacidade operacional (%) — apenas school_capacity",
+    fn: async (ctx) => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const sf = schoolClause(ctx.schoolId, params);
+
+      const studentsResult = await ctx.pool.query<{
+        total: string;
+        distinct_students: string;
+      }>(
+        `SELECT
+             COUNT(*)::text AS total,
+             COUNT(DISTINCT NULLIF(payload->>'student_id', ''))::text AS distinct_students
+           FROM enrollments
+           WHERE created_at >= $1::timestamptz
+             AND created_at < $2::timestamptz
+             AND (payload->>'status' = 'ativo' OR payload->>'status' IS NULL)
+             ${sf}`,
+        params
+      );
+
+      const ds = parseInt(
+        studentsResult.rows[0]?.distinct_students ?? "0",
+        10
+      );
+      const ts = parseInt(studentsResult.rows[0]?.total ?? "0", 10);
+      const students = ds > 0 ? ds : ts;
+
+      const caps = await getCapacities(ctx.pool, ctx.periodEnd, ctx.schoolId);
+
+      if (!caps || caps.operational === 0) {
+        return {
+          value: 0,
+          metadata: { warning: "Capacidade operacional não informada via school_capacity", students },
+        };
+      }
+
+      const rate = (students / caps.operational) * 100;
+      const safetyMarginPct = caps.legal > 0 ? ((caps.legal - caps.operational) / caps.legal) * 100 : 0;
+
+      return {
+        value: Math.round(rate * 100) / 100,
+        metadata: { students, capacity: caps.operational, ratePct: rate, safetyMarginPct },
+      };
+    },
+  },
+
+  /**
+   * Taxa de Ocupação Legal
+   * (active_students / legal_capacity) × 100.
+   */
+  legal_occupancy_rate: {
+    description:
+      "Taxa de ocupação legal: alunos ativos / capacidade legal (edital) (%) — requer school_capacity",
+    fn: async (ctx) => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const sf = schoolClause(ctx.schoolId, params);
+
+      const studentsResult = await ctx.pool.query<{
+        total: string;
+        distinct_students: string;
+      }>(
+        `SELECT
+             COUNT(*)::text AS total,
+             COUNT(DISTINCT NULLIF(payload->>'student_id', ''))::text AS distinct_students
+           FROM enrollments
+           WHERE created_at >= $1::timestamptz
+             AND created_at < $2::timestamptz
+             AND (payload->>'status' = 'ativo' OR payload->>'status' IS NULL)
+             ${sf}`,
+        params
+      );
+
+      const ds = parseInt(
+        studentsResult.rows[0]?.distinct_students ?? "0",
+        10
+      );
+      const ts = parseInt(studentsResult.rows[0]?.total ?? "0", 10);
+      const students = ds > 0 ? ds : ts;
+
+      const caps = await getCapacities(ctx.pool, ctx.periodEnd, ctx.schoolId);
+
+      if (!caps || caps.legal === 0) {
+        return {
+          value: 0,
+          metadata: { warning: "Capacidade legal não informada via school_capacity", students },
+        };
+      }
+
+      const rate = (students / caps.legal) * 100;
+      return {
+        value: Math.round(rate * 100) / 100,
+        metadata: { students, capacity: caps.legal, ratePct: rate },
+      };
+    },
+  },
+
+  /**
+   * Margem de Segurança
+   * legal_capacity - operational_capacity
+   */
+  safety_margin: {
+    description:
+      "Margem de segurança: capacidade legal - capacidade operacional (em nº de vagas)",
+    fn: async (ctx) => {
+      const caps = await getCapacities(ctx.pool, ctx.periodEnd, ctx.schoolId);
+
+      if (!caps) {
+        return {
+          value: 0,
+          metadata: { warning: "school_capacity não configurada" },
+        };
+      }
+
+      const gap = caps.legal - caps.operational;
+      const gapPct = caps.legal > 0 ? (gap / caps.legal) * 100 : 0;
+
+      return {
+        value: gap,
+        metadata: {
+          legal_capacity: caps.legal,
+          operational_capacity: caps.operational,
+          safety_margin_pct: gapPct
+        },
       };
     },
   },
@@ -655,6 +837,287 @@ Object.assign(snippetRegistry, {
       return {
         value: retention,
         metadata: { churnRate, retentionPct: retention },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  // ─── Revenue Realization & Discount Granularity (migration 032) ────────────
+
+  /**
+   * Receita Bruta
+   * SUM(base_value) from student_contracts for the period.
+   */
+  gross_revenue: {
+    description: "Receita Bruta: SUM(base_value) dos contratos de alunos no período",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
+
+      const result = await ctx.pool.query<{ total: string; count: string }>(
+        `SELECT
+           COALESCE(SUM(base_value), 0)::text AS total,
+           COUNT(*)::text                     AS count
+         FROM public.student_contracts
+         WHERE period_start >= $1::date
+           AND period_end   <= $2::date
+           ${schoolFilter}`,
+        params
+      );
+      return {
+        value: parseFloat(result.rows[0]?.total ?? "0"),
+        metadata: { contractCount: parseInt(result.rows[0]?.count ?? "0", 10) },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  /**
+   * Receita Líquida
+   * SUM(final_value) from student_contracts — the computed (Generated Always) column.
+   */
+  net_revenue: {
+    description: "Receita Líquida: SUM(final_value) dos contratos após todos os descontos",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
+
+      const result = await ctx.pool.query<{ total: string }>(
+        `SELECT COALESCE(SUM(final_value), 0)::text AS total
+         FROM public.student_contracts
+         WHERE period_start >= $1::date
+           AND period_end   <= $2::date
+           ${schoolFilter}`,
+        params
+      );
+      return { value: parseFloat(result.rows[0]?.total ?? "0") };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  /**
+   * Leakage por Bolsas/Convênios
+   * SUM(scholarship_discount) from student_contracts.
+   */
+  scholarship_leakage: {
+    description: "Perda de receita por bolsas e convênios: SUM(scholarship_discount)",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
+
+      const result = await ctx.pool.query<{ total: string; count: string }>(
+        `SELECT
+           COALESCE(SUM(scholarship_discount), 0)::text AS total,
+           COUNT(*) FILTER (WHERE scholarship_discount > 0)::text AS count
+         FROM public.student_contracts
+         WHERE period_start >= $1::date
+           AND period_end   <= $2::date
+           ${schoolFilter}`,
+        params
+      );
+      return {
+        value: parseFloat(result.rows[0]?.total ?? "0"),
+        metadata: { affectedContracts: parseInt(result.rows[0]?.count ?? "0", 10) },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  /**
+   * Leakage Comercial
+   * SUM(commercial_discount) from student_contracts (pontualidade, irmãos, negociação).
+   */
+  commercial_leakage: {
+    description: "Perda de receita por descontos comerciais: SUM(commercial_discount)",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
+
+      const result = await ctx.pool.query<{ total: string; count: string }>(
+        `SELECT
+           COALESCE(SUM(commercial_discount), 0)::text AS total,
+           COUNT(*) FILTER (WHERE commercial_discount > 0)::text AS count
+         FROM public.student_contracts
+         WHERE period_start >= $1::date
+           AND period_end   <= $2::date
+           ${schoolFilter}`,
+        params
+      );
+      return {
+        value: parseFloat(result.rows[0]?.total ?? "0"),
+        metadata: { affectedContracts: parseInt(result.rows[0]?.count ?? "0", 10) },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  /**
+   * Taxa de Realização de Receita
+   * (net_revenue / gross_revenue) × 100 — how much of gross revenue is actually collected.
+   */
+  revenue_realization_rate: {
+    description: "Taxa de realização: receita líquida / receita bruta × 100 (%)",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
+
+      const result = await ctx.pool.query<{
+        gross: string;
+        net: string;
+        scholarship: string;
+        commercial: string;
+      }>(
+        `SELECT
+           COALESCE(SUM(base_value), 0)::text           AS gross,
+           COALESCE(SUM(final_value), 0)::text          AS net,
+           COALESCE(SUM(scholarship_discount), 0)::text AS scholarship,
+           COALESCE(SUM(commercial_discount), 0)::text  AS commercial
+         FROM public.student_contracts
+         WHERE period_start >= $1::date
+           AND period_end   <= $2::date
+           ${schoolFilter}`,
+        params
+      );
+
+      const gross = parseFloat(result.rows[0]?.gross ?? "0");
+      const net = parseFloat(result.rows[0]?.net ?? "0");
+      const scholarship = parseFloat(result.rows[0]?.scholarship ?? "0");
+      const commercial = parseFloat(result.rows[0]?.commercial ?? "0");
+
+      if (gross <= 0) {
+        return {
+          value: 0,
+          metadata: { warning: "Nenhum contrato encontrado no período", gross, net },
+        };
+      }
+
+      const rate = Math.round((net / gross) * 100 * 100) / 100;
+      return {
+        value: rate,
+        metadata: { gross, net, scholarship, commercial, realizationPct: rate },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  /**
+   * Leakage Total de Desconto
+   * SUM(scholarship_discount + commercial_discount) — total revenue leakage.
+   * Supersedes legacy total_discounts (which reads payments.payload->>'discount_amount').
+   */
+  total_discount_leakage: {
+    description: "Leakage total: SUM(scholarship_discount + commercial_discount) dos contratos",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
+
+      const result = await ctx.pool.query<{
+        total: string;
+        scholarship: string;
+        commercial: string;
+      }>(
+        `SELECT
+           COALESCE(SUM(scholarship_discount + commercial_discount), 0)::text AS total,
+           COALESCE(SUM(scholarship_discount), 0)::text                       AS scholarship,
+           COALESCE(SUM(commercial_discount), 0)::text                        AS commercial
+         FROM public.student_contracts
+         WHERE period_start >= $1::date
+           AND period_end   <= $2::date
+           ${schoolFilter}`,
+        params
+      );
+      return {
+        value: parseFloat(result.rows[0]?.total ?? "0"),
+        metadata: {
+          scholarshipLeakage: parseFloat(result.rows[0]?.scholarship ?? "0"),
+          commercialLeakage: parseFloat(result.rows[0]?.commercial ?? "0"),
+        },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  // ─── Pedagogical Retention (migration 033) ────────────────────────────────
+
+  /**
+   * LTV Perdido por Cancelamentos
+   * SUM(ltv_lost) from enrollments WHERE enrollment_status = 'cancelled'.
+   */
+  ltv_lost_by_cancellation: {
+    description: "LTV perdido: SUM(ltv_lost) das matrículas canceladas no período",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = schoolClause(ctx.schoolId, params);
+
+      const result = await ctx.pool.query<{
+        total: string;
+        count: string;
+      }>(
+        `SELECT
+           COALESCE(SUM(ltv_lost), 0)::text AS total,
+           COUNT(*)::text                   AS count
+         FROM public.enrollments
+         WHERE enrollment_status = 'cancelled'
+           AND cancelled_at >= $1::date
+           AND cancelled_at <= ($2::date + interval '1 day')
+           ${schoolFilter}`,
+        params
+      );
+      return {
+        value: parseFloat(result.rows[0]?.total ?? "0"),
+        metadata: { cancelledCount: parseInt(result.rows[0]?.count ?? "0", 10) },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  /**
+   * Taxa de Falha de Adaptação
+   * % of cancelled enrollments classified as adaptation_failure.
+   * Critical pedagogical metric — high values indicate onboarding issues.
+   */
+  adaptation_failure_rate: {
+    description: "% de cancelamentos por Falha de Adaptação — métrica crítica pedagógica",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = schoolClause(ctx.schoolId, params);
+
+      const result = await ctx.pool.query<{
+        total: string;
+        adaptation: string;
+      }>(
+        `SELECT
+           COUNT(*)::text                                                    AS total,
+           COUNT(*) FILTER (
+             WHERE cm.code = 'adaptation_failure'
+           )::text                                                           AS adaptation
+         FROM public.enrollments e
+         LEFT JOIN public.churn_motives cm ON cm.id = e.churn_motive_id
+         WHERE e.enrollment_status = 'cancelled'
+           AND e.cancelled_at >= $1::date
+           AND e.cancelled_at <= ($2::date + interval '1 day')
+           ${schoolFilter}`,
+        params
+      );
+
+      const total = parseInt(result.rows[0]?.total ?? "0", 10);
+      const adaptation = parseInt(result.rows[0]?.adaptation ?? "0", 10);
+
+      if (total <= 0) {
+        return {
+          value: 0,
+          metadata: { warning: "Nenhum cancelamento no período", total, adaptation },
+        };
+      }
+
+      const rate = Math.round((adaptation / total) * 100 * 100) / 100;
+      return {
+        value: rate,
+        metadata: { total, adaptation, adaptationRatePct: rate },
       };
     },
   } satisfies { description: string; fn: SnippetFn },
