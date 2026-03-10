@@ -60,7 +60,7 @@ export function LeadDetailSheet({ leadId, onClose }: LeadDetailSheetProps) {
 
   const isOpen = !!leadId;
   const canEdit = canEditLead(user?.role, user?.id, lead);
-  const canPromote = ["admin", "finance", "ops"].includes(user?.role ?? "");
+  const canPromote = ["admin", "director", "seller"].includes(user?.role ?? "");
   const alreadyConverted = !!(lead as any)?.convertedEnrollmentId;
 
   const getPayloadField = (key: string): string => {
@@ -333,7 +333,7 @@ export function LeadDetailSheet({ leadId, onClose }: LeadDetailSheetProps) {
                           ? "Este lead já foi convertido em matrícula."
                           : canPromote
                             ? "Promover este lead para matrícula ativa."
-                            : "Conversão financeira restrita a Administrador, Financeiro ou Operações."}
+                            : "Conversão restrita a Administrador, Diretoria ou Vendedor responsável."}
                       </p>
                       <Button
                         variant={alreadyConverted ? "secondary" : "default"}

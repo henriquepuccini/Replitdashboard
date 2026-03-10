@@ -201,6 +201,7 @@ export interface IStorage {
   createSchoolCapacity(data: InsertSchoolCapacity): Promise<SchoolCapacity>;
   updateSchoolCapacity(id: string, data: Partial<InsertSchoolCapacity>): Promise<SchoolCapacity | undefined>;
   deleteSchoolCapacity(id: string): Promise<boolean>;
+  bulkUpsertSchoolCapacities(schoolId: string, data: InsertSchoolCapacity[]): Promise<SchoolCapacity[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -921,6 +922,33 @@ export class DatabaseStorage implements IStorage {
       .where(eq(schoolCapacity.id, id))
       .returning();
     return result.length > 0;
+  }
+
+  async bulkUpsertSchoolCapacities(schoolId: string, data: InsertSchoolCapacity[]): Promise<SchoolCapacity[]> {
+    if (data.length === 0) return [];
+
+    const results: SchoolCapacity[] = [];
+
+    await db.transaction(async (tx) => {
+      for (const item of data) {
+        const [row] = await tx
+          .insert(schoolCapacity)
+          .values({ ...item, schoolId })
+          .onConflictDoUpdate({
+            target: [schoolCapacity.schoolId, schoolCapacity.turma, schoolCapacity.effectiveFrom],
+            set: {
+              legalCapacity: item.legalCapacity,
+              operationalCapacity: item.operationalCapacity,
+              notes: item.notes,
+              updatedAt: new Date(),
+            },
+          })
+          .returning();
+        results.push(row);
+      }
+    });
+
+    return results;
   }
 }
 

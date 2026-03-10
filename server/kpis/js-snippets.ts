@@ -471,6 +471,89 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
   },
 
   /**
+   * Vacância por Turma
+   * Detalhamento de vagas disponíveis por sala/turma.
+   */
+  vacancy_by_turma: {
+    description: "Detalhamento de vagas por turma: capacidade operacional vs. alunos ativos",
+    fn: async (ctx) => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const sf = schoolClause(ctx.schoolId, params);
+
+      // Get students counts per turma
+      const studentsResult = await ctx.pool.query<{
+        turma: string;
+        count: string;
+      }>(
+        `SELECT
+             COALESCE(payload->>'turma', 'Não Informada') as turma,
+             COUNT(DISTINCT NULLIF(payload->>'student_id', ''))::text AS count
+           FROM enrollments
+           WHERE created_at >= $1::timestamptz
+             AND created_at < $2::timestamptz
+             AND (payload->>'status' = 'ativo' OR payload->>'status' IS NULL)
+             ${sf}
+           GROUP BY COALESCE(payload->>'turma', 'Não Informada')`,
+        params
+      );
+
+      const studentCounts = new Map(
+        studentsResult.rows.map((r) => [r.turma, parseInt(r.count, 10)])
+      );
+
+      // Get latest capacities per turma
+      const capParams: unknown[] = [ctx.periodEnd];
+      const capSf = ctx.schoolId
+        ? (capParams.push(ctx.schoolId), `AND school_id = $2::uuid`)
+        : "AND school_id IS NULL";
+
+      const capsResult = await ctx.pool.query<{
+        turma: string;
+        operational_capacity: number;
+        legal_capacity: number;
+      }>(
+        `SELECT DISTINCT ON (COALESCE(turma, '')) 
+           COALESCE(turma, 'Não Informada') as turma,
+           operational_capacity, 
+           legal_capacity
+         FROM public.school_capacity
+         WHERE effective_from <= $1::date
+           ${capSf}
+         ORDER BY COALESCE(turma, ''), effective_from DESC`,
+        capParams
+      );
+
+      const breakdown = capsResult.rows.map((r) => {
+        const students = studentCounts.get(r.turma) || 0;
+        const vacancy = Math.max(0, r.operational_capacity - students);
+        const isFull = vacancy === 0 && r.operational_capacity > 0;
+
+        return {
+          turma: r.turma,
+          capacity: r.operational_capacity,
+          legalCapacity: r.legal_capacity,
+          students,
+          vacancy,
+          isFull,
+          occupancyPct: r.operational_capacity > 0 ? (students / r.operational_capacity) * 100 : 0
+        };
+      });
+
+      // Overall vacancy as the main value (sum of vacancies)
+      const totalVacancy = breakdown.reduce((sum, item) => sum + item.vacancy, 0);
+
+      return {
+        value: totalVacancy,
+        metadata: {
+          breakdown,
+          totalStudents: Array.from(studentCounts.values()).reduce((a, b) => a + b, 0),
+          totalCapacity: breakdown.reduce((sum, item) => sum + item.capacity, 0)
+        },
+      };
+    },
+  },
+
+  /**
    * Margem de Segurança
    * legal_capacity - operational_capacity
    */
@@ -1118,6 +1201,53 @@ Object.assign(snippetRegistry, {
       return {
         value: rate,
         metadata: { total, adaptation, adaptationRatePct: rate },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
+  /**
+   * Tempo Médio de Conversão (dias)
+   * Average number of calendar days between lead creation and conversion to
+   * an active enrollment, for leads whose converted_at falls within the period.
+   */
+  avg_conversion_time: {
+    description: "Tempo médio em dias do primeiro contato do lead até a conversão em matrícula",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const schoolFilter = schoolClause(ctx.schoolId, params);
+
+      const result = await ctx.pool.query<{
+        avg_days: string | null;
+        total_converted: string;
+      }>(
+        `SELECT
+           AVG(
+             EXTRACT(EPOCH FROM (converted_at - created_at)) / 86400.0
+           )::text                     AS avg_days,
+           COUNT(*)::text              AS total_converted
+         FROM public.leads
+         WHERE converted_at IS NOT NULL
+           AND converted_at >= $1::timestamptz
+           AND converted_at <  ($2::timestamptz + interval '1 day')
+           ${schoolFilter}`,
+        params
+      );
+
+      const totalConverted = parseInt(result.rows[0]?.total_converted ?? "0", 10);
+      const avgDays = result.rows[0]?.avg_days != null
+        ? Math.round(parseFloat(result.rows[0].avg_days) * 10) / 10
+        : null;
+
+      if (totalConverted === 0 || avgDays === null) {
+        return {
+          value: 0,
+          metadata: { warning: "Nenhuma conversão no período", totalConverted },
+        };
+      }
+
+      return {
+        value: avgDays,
+        metadata: { totalConverted, avgDays },
       };
     },
   } satisfies { description: string; fn: SnippetFn },

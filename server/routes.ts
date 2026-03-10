@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { pool } from "./db";
 import {
   insertUserSchema,
   insertSchoolSchema,
@@ -599,6 +600,39 @@ export async function registerRoutes(
 
         const cap = await storage.createSchoolCapacity(data);
         res.status(201).json(cap);
+      } catch (error) {
+        res.status(400).json({ message: handleZodError(error) });
+      }
+    }
+  );
+
+  app.post(
+    "/api/schools/:id/capacity/bulk",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const schoolId = req.params.id as string;
+        if (!isAdmin(req)) {
+          const isDirector = await isDirectorOfSchool(req, schoolId);
+          if (!isDirector) {
+            return res.status(403).json({ message: "Insufficient permissions" });
+          }
+        }
+
+        if (!Array.isArray(req.body)) {
+          return res.status(400).json({ message: "Body must be an array of capacities" });
+        }
+
+        const items = req.body.map(item =>
+          insertSchoolCapacitySchema.parse({
+            ...item,
+            schoolId,
+            createdBy: req.currentUser!.id
+          })
+        );
+
+        const caps = await storage.bulkUpsertSchoolCapacities(schoolId, items);
+        res.status(201).json(caps);
       } catch (error) {
         res.status(400).json({ message: handleZodError(error) });
       }
@@ -1529,54 +1563,82 @@ export async function registerRoutes(
   });
 
   // =========================================================================
-  // LEADS — PROMOTE TO ENROLLMENT (admin, finance, ops)
+  // LEADS — PROMOTE TO ENROLLMENT (admin, director, seller)
   // =========================================================================
 
   app.post("/api/leads/:id/promote", requireAuth, async (req, res) => {
     try {
       const userRole = req.currentUser!.role;
-      if (!["admin", "finance", "ops"].includes(userRole)) {
-        return res.status(403).json({ message: "Insufficient permissions — admin, finance or ops required" });
+      const ALLOWED_ROLES = ["admin", "director", "seller"];
+      if (!ALLOWED_ROLES.includes(userRole)) {
+        return res.status(403).json({ message: "Insufficient permissions — admin, director or seller required" });
       }
 
       const leadId = req.params.id as string;
       const lead = await storage.getLead(leadId);
       if (!lead) return res.status(404).json({ message: "Lead not found" });
 
-      // Already converted?
+      // Sellers can only promote their own leads
+      if (userRole === "seller" && lead.sellerId !== req.currentUser!.id) {
+        return res.status(403).json({ message: "Sellers can only promote their own leads" });
+      }
+
+      // Directors are scoped to their own schools
+      if (userRole === "director" && lead.schoolId) {
+        const dirOfSchool = await isDirectorOfSchool(req, lead.schoolId);
+        if (!dirOfSchool) {
+          return res.status(403).json({ message: "Directors can only promote leads from their own schools" });
+        }
+      }
+
+      // Already converted guard
       if ((lead as any).convertedEnrollmentId) {
         return res.status(409).json({
-          message: "Lead already converted",
+          message: "Lead já convertido em matrícula.",
           enrollmentId: (lead as any).convertedEnrollmentId,
         });
       }
 
-      // Duplicate check: look for existing enrollments with same email or CPF
+      // Efficient de-duplication via raw SQL — no full table scan
       const p = lead.payload as Record<string, unknown>;
       const email = String(p.email || "").toLowerCase().trim();
       const cpf = String(p.cpf || "").replace(/\D/g, "");
 
       if (email || cpf) {
-        const allEnrollments = await storage.getEnrollments();
-        const duplicate = allEnrollments.find((e) => {
-          const ep = e.payload as Record<string, unknown>;
-          const eEmail = String(ep.email || "").toLowerCase().trim();
-          const eCpf = String(ep.cpf || "").replace(/\D/g, "");
-          return (email && eEmail === email) || (cpf && eCpf === cpf && cpf.length >= 11);
-        });
-        if (duplicate) {
-          return res.status(409).json({
-            message: "Duplicate: enrollment already exists for this email/CPF",
-            enrollmentId: duplicate.id,
-          });
+        const conditions: string[] = [];
+        const params: unknown[] = [];
+
+        if (email) {
+          params.push(email);
+          conditions.push(`LOWER(TRIM(payload->>'email')) = $${params.length}`);
+        }
+        if (cpf && cpf.length >= 11) {
+          params.push(cpf);
+          conditions.push(`REGEXP_REPLACE(payload->>'cpf', '\\D', '', 'g') = $${params.length}`);
+        }
+
+        if (conditions.length > 0) {
+          const dupResult = await pool.query<{ id: string }>(
+            `SELECT id FROM public.enrollments WHERE ${conditions.join(" OR ")} LIMIT 1`,
+            params
+          );
+          if (dupResult.rows.length > 0) {
+            return res.status(409).json({
+              message: "Matrícula já existe para este email/CPF.",
+              enrollmentId: dupResult.rows[0].id,
+            });
+          }
         }
       }
 
-      // Find a connector to associate the new enrollment with
+      // Resolve connector — prefer system connector, fallback to first CRM connector
       const connectorsList = await storage.getConnectors();
-      const crmConnector = connectorsList.find((c) => c.type === "crm") ?? connectorsList[0];
-      if (!crmConnector) {
-        return res.status(503).json({ message: "No connector available" });
+      const systemConnector = connectorsList.find((c) => c.name === "Sistema");
+      const crmConnector = connectorsList.find((c) => c.type === "crm");
+      const sourceConnector = systemConnector ?? crmConnector ?? connectorsList[0];
+
+      if (!sourceConnector) {
+        return res.status(503).json({ message: "Nenhum conector disponível para criar a matrícula." });
       }
 
       const { schoolId, contractValue } = req.body as { schoolId?: string; contractValue?: number };
@@ -1592,14 +1654,14 @@ export async function registerRoutes(
 
       const sourceId = `lead-${lead.id}`;
       const enrollment = await storage.upsertEnrollment({
-        sourceConnectorId: crmConnector.id,
+        sourceConnectorId: sourceConnector.id,
         sourceId,
         schoolId: effectiveSchoolId,
         payload: enrollmentPayload,
         enrollmentStatus: "active",
       });
 
-      // Mark lead as converted
+      // Mark lead as converted — stage='won', status='closed'
       await storage.updateLead(leadId, {
         stage: "won",
         status: "closed",
@@ -1608,7 +1670,7 @@ export async function registerRoutes(
         lastInteraction: new Date().toISOString(),
       } as any);
 
-      res.json({ enrollment, leadId });
+      res.status(201).json({ enrollment, leadId });
     } catch (error) {
       console.error("Lead promote error:", error);
       res.status(500).json({ message: "Failed to promote lead" });

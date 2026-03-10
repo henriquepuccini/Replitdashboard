@@ -553,13 +553,13 @@ export default function SchoolDashboardPage() {
 
                     {/* KPI Cards */}
                     {isLoading ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-                            {[1, 2, 3, 4, 5, 6].map((i) => (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                            {[1, 2, 3, 4, 5, 6, 7].map((i) => (
                                 <Skeleton key={i} className="h-32 w-full rounded-xl" />
                             ))}
                         </div>
                     ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                             <KpiCard
                                 title="Faturamento (Receita)"
                                 value={revenue !== null ? BRL(revenue) : "—"}
@@ -595,6 +595,13 @@ export default function SchoolDashboardPage() {
                                 value={nps !== null ? NUM(nps) : "—"}
                                 icon={<HeartPulse className="h-4 w-4" />}
                                 description={nps === null ? "Sem dados" : undefined}
+                            />
+                            <KpiCard
+                                title="Tempo Médio de Conversão"
+                                value={getKpiValue("avg_conversion_time") !== null ? `${NUM(getKpiValue("avg_conversion_time")!)} dias` : "—"}
+                                icon={<Clock className="h-4 w-4" />}
+                                description={getKpiValue("avg_conversion_time") === null ? "Sem conversões no período" : "Lead → Matrícula"}
+                                data-testid="kpi-card-avg-conversion-time"
                             />
                         </div>
                     )}
