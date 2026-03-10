@@ -468,6 +468,20 @@ export const payments = pgTable(
     schoolId: uuid("school_id").references(() => schools.id, {
       onDelete: "set null",
     }),
+    grossValue: numeric("gross_value", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),
+    scholarshipDiscount: numeric("scholarship_discount", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),
+    commercialDiscount: numeric("commercial_discount", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),
+    netValue: numeric("net_value", { precision: 18, scale: 4 })
+      .notNull()
+      .default("0"),
+    dueDate: date("due_date"),
+    installmentNumber: integer("installment_number"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -480,6 +494,7 @@ export const payments = pgTable(
     index("idx_payments_created_at").on(table.createdAt),
     index("idx_payments_source_id").on(table.sourceId),
     index("idx_payments_source_connector_id").on(table.sourceConnectorId),
+    index("idx_payments_due_date").on(table.dueDate),
   ]
 );
 
@@ -635,7 +650,49 @@ export const insertPaymentSchema = createInsertSchema(payments)
     sourceId: z.string().min(1, "Source ID is required"),
     payload: z.record(z.unknown()),
     schoolId: z.string().uuid("Invalid school ID").nullable().optional(),
-  });
+    grossValue: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v))
+      .optional()
+      .default("0"),
+    scholarshipDiscount: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v))
+      .optional()
+      .default("0"),
+    commercialDiscount: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v))
+      .optional()
+      .default("0"),
+    netValue: z
+      .number()
+      .or(z.string().transform((v) => parseFloat(v)))
+      .transform((v) => String(v))
+      .optional()
+      .default("0"),
+    dueDate: z.string().nullable().optional(),
+    installmentNumber: z.number().int().positive().nullable().optional(),
+  })
+  .refine(
+    (data) => {
+      const gross = parseFloat(String(data.grossValue || 0));
+      const sch = parseFloat(String(data.scholarshipDiscount || 0));
+      const com = parseFloat(String(data.commercialDiscount || 0));
+      const expectedNet = gross - sch - com;
+
+      const actualNet = parseFloat(String(data.netValue || 0));
+      // Using Math.abs to accommodate slight floating point inaccuracies
+      return Math.abs(expectedNet - actualNet) < 0.001;
+    },
+    {
+      message: "net_value must exactly equal gross_value - scholarship_discount - commercial_discount",
+      path: ["netValue"],
+    }
+  );
 
 export const insertEnrollmentSchema = createInsertSchema(enrollments)
   .omit({
@@ -1163,9 +1220,17 @@ export const churnEvents = pgTable(
     churnReason: text("churn_reason"),
     detectedBy: varchar("detected_by", { length: 20 }).notNull().default("engine"),
     payload: jsonb("payload").$type<Record<string, unknown>>().default({}),
+    // Migration 037 additions
+    motiveId: uuid("motive_id").references(() => churnMotives.id, { onDelete: "restrict" }),
+    notes: text("notes"),
+    churnDate: date("churn_date"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index("idx_churn_events_school_detected").on(table.schoolId, table.detectedAt)]
+  (table) => [
+    index("idx_churn_events_school_detected").on(table.schoolId, table.detectedAt),
+    index("idx_churn_events_motive_id").on(table.motiveId),
+    index("idx_churn_events_churn_date").on(table.schoolId, table.churnDate),
+  ]
 );
 
 export const insertChurnEventSchema = createInsertSchema(churnEvents)
@@ -1174,6 +1239,9 @@ export const insertChurnEventSchema = createInsertSchema(churnEvents)
     schoolId: z.string().uuid("Invalid school ID"),
     sourceType: z.enum(["lead", "enrollment"]),
     detectedBy: z.enum(["engine", "manual"]).default("engine"),
+    motiveId: z.string().uuid("Invalid motive ID").nullable().optional(),
+    notes: z.string().nullable().optional(),
+    churnDate: z.string().nullable().optional(),
   });
 
 export const churnRuns = pgTable(

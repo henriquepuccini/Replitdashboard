@@ -70,8 +70,23 @@ async function upsertNormalizedRecord(
   switch (table) {
     case "leads":
       return storage.upsertLead(data);
-    case "payments":
-      return storage.upsertPayment(data);
+    case "payments": {
+      // Extract financial fields from payload if available, defaulting to 0
+      const p = record.payload;
+      const gross = parseFloat(String(p.gross_value ?? p.amount ?? 0)) || 0;
+      const scholarship = parseFloat(String(p.scholarship_discount ?? 0)) || 0;
+      const commercial = parseFloat(String(p.commercial_discount ?? p.discount_amount ?? 0)) || 0;
+      const net = gross - scholarship - commercial;
+      return storage.upsertPayment({
+        ...data,
+        grossValue: String(gross),
+        scholarshipDiscount: String(scholarship),
+        commercialDiscount: String(commercial),
+        netValue: String(net),
+        dueDate: (p.due_date as string | undefined) ?? null,
+        installmentNumber: p.installment_number ? Number(p.installment_number) : null,
+      });
+    }
     case "enrollments":
       return storage.upsertEnrollment(data);
   }

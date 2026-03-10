@@ -119,12 +119,12 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
 
   total_revenue: {
     description:
-      "Soma receita total no período a partir de payments.payload->amount",
+      "Soma receita total bruta no período a partir de payments.gross_value",
     fn: async (ctx) => {
       const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
       const sf = schoolClause(ctx.schoolId, params);
       const result = await ctx.pool.query(
-        `SELECT COALESCE(SUM((payload->>'amount')::numeric), 0) AS total
+        `SELECT COALESCE(SUM(gross_value), 0) AS total
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz ${sf}`,
@@ -178,13 +178,13 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
 
   avg_ticket: {
     description:
-      "Ticket médio: receita total / número de pagamentos no período",
+      "Ticket médio: receita bruta / número de pagamentos no período",
     fn: async (ctx) => {
       const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
       const sf = schoolClause(ctx.schoolId, params);
       const result = await ctx.pool.query(
         `SELECT
-             COALESCE(AVG((payload->>'amount')::numeric), 0) AS avg_val,
+             COALESCE(AVG(gross_value), 0) AS avg_val,
              COUNT(*)::int AS count
            FROM payments
            WHERE created_at >= $1::timestamptz
@@ -240,18 +240,18 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
    */
   total_discounts: {
     description:
-      "Soma total de descontos aplicados nos pagamentos do período",
+      "Soma total de descontos (bolsa + comercial) nos pagamentos do período",
     fn: async (ctx) => {
       const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
       const sf = schoolClause(ctx.schoolId, params);
       const result = await ctx.pool.query<{ total: string; count: string }>(
         `SELECT
-             COALESCE(SUM(NULLIF(payload->>'discount_amount','')::numeric), 0)::text AS total,
+             COALESCE(SUM(scholarship_discount + commercial_discount), 0)::text AS total,
              COUNT(*)::text AS count
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz
-             AND (payload->>'discount_amount') IS NOT NULL
+             AND (scholarship_discount > 0 OR commercial_discount > 0)
              ${sf}`,
         params
       );
@@ -276,7 +276,7 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const sf = schoolClause(ctx.schoolId, params);
 
       const ticketResult = await ctx.pool.query<{ avg_val: string }>(
-        `SELECT COALESCE(AVG((payload->>'amount')::numeric), 0)::text AS avg_val
+        `SELECT COALESCE(AVG(gross_value), 0)::text AS avg_val
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz ${sf}`,
@@ -514,7 +514,7 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const sf = schoolClause(ctx.schoolId, params);
 
       const revenueResult = await ctx.pool.query<{ total: string }>(
-        `SELECT COALESCE(SUM((payload->>'amount')::numeric), 0)::text AS total
+        `SELECT COALESCE(SUM(gross_value), 0)::text AS total
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz ${sf}`,
@@ -647,7 +647,7 @@ Object.assign(snippetRegistry, {
         ? (revParams.push(ctx.schoolId), `AND school_id = $${revParams.length}::uuid`)
         : "";
       const revResult = await ctx.pool.query<{ total: string }>(
-        `SELECT COALESCE(SUM((payload->>'amount')::numeric), 0)::text AS total
+        `SELECT COALESCE(SUM(gross_value), 0)::text AS total
          FROM payments
          WHERE created_at >= $1::timestamptz
            AND created_at < $2::timestamptz ${revSf}`,
@@ -874,10 +874,10 @@ Object.assign(snippetRegistry, {
 
   /**
    * Receita Líquida
-   * SUM(final_value) from student_contracts — the computed (Generated Always) column.
+   * SUM(net_value) from payments.
    */
   net_revenue: {
-    description: "Receita Líquida: SUM(final_value) dos contratos após todos os descontos",
+    description: "Receita Líquida: Receita bruta (payments.gross_value) descontadas as bolsas e descontos",
     fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
       const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
       const schoolFilter = ctx.schoolId
@@ -885,10 +885,10 @@ Object.assign(snippetRegistry, {
         : "";
 
       const result = await ctx.pool.query<{ total: string }>(
-        `SELECT COALESCE(SUM(final_value), 0)::text AS total
-         FROM public.student_contracts
-         WHERE period_start >= $1::date
-           AND period_end   <= $2::date
+        `SELECT COALESCE(SUM(net_value), 0)::text AS total
+         FROM public.payments
+         WHERE created_at >= $1::timestamptz
+           AND created_at < $2::timestamptz
            ${schoolFilter}`,
         params
       );

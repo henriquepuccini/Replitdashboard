@@ -2737,6 +2737,59 @@ export async function registerRoutes(
     }
   });
 
+  // DELETE a churn motive — blocked if events are linked (referential integrity)
+  // DELETE /api/churn-motives/:id
+  app.delete("/api/churn-motives/:id", requireAuth, async (req, res) => {
+    try {
+      if (!isAdmin(req)) {
+        return res.status(403).json({ message: "Only admins can delete churn motives" });
+      }
+
+      const motiveId = req.params.id as string;
+      const { pool } = await import("./db");
+
+      // Check if any churn_events reference this motive
+      const eventsCheck = await pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM public.churn_events WHERE motive_id = $1::uuid`,
+        [motiveId]
+      );
+      const linkedEvents = parseInt(eventsCheck.rows[0]?.count ?? "0", 10);
+      if (linkedEvents > 0) {
+        return res.status(409).json({
+          message: `Não é possível excluir este motivo: ${linkedEvents} evento(s) de churn estão vinculados a ele.`,
+          linkedEvents,
+        });
+      }
+
+      // Also check enrollments referencing this motive
+      const enrollmentsCheck = await pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM public.enrollments WHERE churn_motive_id = $1::uuid`,
+        [motiveId]
+      );
+      const linkedEnrollments = parseInt(enrollmentsCheck.rows[0]?.count ?? "0", 10);
+      if (linkedEnrollments > 0) {
+        return res.status(409).json({
+          message: `Não é possível excluir este motivo: ${linkedEnrollments} matrícula(s) cancelada(s) estão vinculadas a ele.`,
+          linkedEnrollments,
+        });
+      }
+
+      const result = await pool.query(
+        `DELETE FROM public.churn_motives WHERE id = $1::uuid RETURNING id`,
+        [motiveId]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({ message: "Motive not found" });
+      }
+
+      res.json({ message: "Motive deleted successfully", id: motiveId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete motive";
+      res.status(500).json({ message });
+    }
+  });
+
   // Cancel an enrollment and record the motive + auto-compute ltv_lost
   // PATCH /api/enrollments/:id/cancel
   app.patch("/api/enrollments/:id/cancel", requireAuth, async (req, res) => {
