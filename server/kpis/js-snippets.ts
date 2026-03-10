@@ -134,6 +134,48 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
     },
   },
 
+  /**
+   * Receita Líquida
+   * SUM(net_value) from structured payments columns for the period.
+   * More precise than reading from the JSONB payload blob.
+   */
+  net_revenue: {
+    description:
+      "Receita líquida: soma de net_value (gross − bolsa − desconto comercial) no período",
+    fn: async (ctx: SnippetContext): Promise<SnippetResult> => {
+      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
+      const sf = schoolClause(ctx.schoolId, params);
+      const result = await ctx.pool.query<{
+        net: string;
+        gross: string;
+        scholarship: string;
+        commercial: string;
+        count: string;
+      }>(
+        `SELECT
+           COALESCE(SUM(net_value), 0)::text            AS net,
+           COALESCE(SUM(gross_value), 0)::text          AS gross,
+           COALESCE(SUM(scholarship_discount), 0)::text AS scholarship,
+           COALESCE(SUM(commercial_discount), 0)::text  AS commercial,
+           COUNT(*)::text                               AS count
+         FROM public.payments
+         WHERE created_at >= $1::timestamptz
+           AND created_at <  $2::timestamptz
+           ${sf}`,
+        params
+      );
+      const net = parseFloat(result.rows[0]?.net ?? "0");
+      const gross = parseFloat(result.rows[0]?.gross ?? "0");
+      const scholarship = parseFloat(result.rows[0]?.scholarship ?? "0");
+      const commercial = parseFloat(result.rows[0]?.commercial ?? "0");
+      const count = parseInt(result.rows[0]?.count ?? "0", 10);
+      return {
+        value: net,
+        metadata: { gross, scholarshipDiscount: scholarship, commercialDiscount: commercial, paymentCount: count },
+      };
+    },
+  } satisfies { description: string; fn: SnippetFn },
+
   new_leads: {
     description: "Conta novos leads no período",
     fn: async (ctx) => {

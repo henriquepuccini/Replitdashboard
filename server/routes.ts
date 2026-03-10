@@ -2922,5 +2922,175 @@ export async function registerRoutes(
     }
   });
 
+  // =========================================================================
+  // CHURN EVENTS — BY MOTIVE (for distribution chart)
+  // =========================================================================
+
+  app.get("/api/churn-events/by-motive", requireAuth, async (req, res) => {
+    try {
+      if (!canViewNormalizedData(req)) {
+        return res.status(403).json({ message: "Insufficient permissions" });
+      }
+
+      const { school_id, period_start, period_end } = req.query;
+
+      // Scope: directors and sellers see only their school(s)
+      let effectiveSchoolId = school_id as string | undefined;
+      const userRole = req.currentUser!.role;
+      if (!isAdmin(req) && !isExec(req) && !isOps(req)) {
+        const schoolIds = getUserSchoolIds(req);
+        if (!effectiveSchoolId || !schoolIds.includes(effectiveSchoolId)) {
+          effectiveSchoolId = schoolIds[0]; // default to first school
+        }
+      }
+
+      const params: unknown[] = [];
+      const conditions: string[] = [];
+
+      if (period_start) {
+        params.push(period_start as string);
+        conditions.push(`ce.detected_at >= $${params.length}::timestamptz`);
+      }
+      if (period_end) {
+        params.push(period_end as string);
+        conditions.push(`ce.detected_at < ($${params.length}::timestamptz + interval '1 day')`);
+      }
+      if (effectiveSchoolId) {
+        params.push(effectiveSchoolId);
+        conditions.push(`ce.school_id = $${params.length}::uuid`);
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+      const result = await pool.query<{
+        motive_id: string | null;
+        code: string | null;
+        label: string | null;
+        is_critical: boolean | null;
+        count: string;
+      }>(
+        `SELECT
+           ce.motive_id,
+           cm.code,
+           cm.label,
+           cm.is_critical,
+           COUNT(*)::text AS count
+         FROM public.churn_events ce
+         LEFT JOIN public.churn_motives cm ON cm.id = ce.motive_id
+         ${where}
+         GROUP BY ce.motive_id, cm.code, cm.label, cm.is_critical
+         ORDER BY COUNT(*) DESC`,
+        params
+      );
+
+      const data = result.rows.map((r) => ({
+        motiveId: r.motive_id,
+        code: r.code ?? "unknown",
+        label: r.label ?? "Não categorizado",
+        isCritical: r.is_critical ?? false,
+        count: parseInt(r.count, 10),
+      }));
+
+      res.json(data);
+    } catch (error) {
+      console.error("Churn events by-motive error:", error);
+      res.status(500).json({ message: "Failed to fetch churn distribution" });
+    }
+  });
+
+  // =========================================================================
+  // SCHOOLS — VACANCY BY CLASS (for detailed vacancy table)
+  // =========================================================================
+
+  app.get("/api/schools/:id/vacancy-by-class", requireAuth, async (req, res) => {
+    try {
+      const schoolId = req.params.id as string;
+      const userRole = req.currentUser!.role;
+
+      // Only admin, exec, ops, or directors/sellers of this school
+      if (!isAdmin(req) && !isExec(req) && !isOps(req)) {
+        const dirOfSchool = await isDirectorOfSchool(req, schoolId);
+        if (!dirOfSchool) {
+          const schoolIds = getUserSchoolIds(req);
+          if (!schoolIds.includes(schoolId)) {
+            return res.status(403).json({ message: "Access denied" });
+          }
+        }
+      }
+
+      const { period_end } = req.query;
+      const effectivePeriodEnd = (period_end as string) ?? new Date().toISOString().slice(0, 10);
+
+      // Get all capacity rows for this school (latest effective per turma)
+      const capResult = await pool.query<{
+        turma: string | null;
+        legal_capacity: string | null;
+        operational_capacity: string | null;
+      }>(
+        `SELECT DISTINCT ON (COALESCE(turma, '')) turma, legal_capacity, operational_capacity
+         FROM public.school_capacity
+         WHERE school_id = $1::uuid
+           AND effective_from <= $2::date
+         ORDER BY COALESCE(turma, ''), effective_from DESC`,
+        [schoolId, effectivePeriodEnd]
+      );
+
+      if (!capResult.rows.length) {
+        // No capacity configured — return empty with a hint
+        return res.json({ rows: [], hint: "Nenhuma capacidade configurada para esta escola." });
+      }
+
+      // For each turma, count active enrollments matching payload->>'turma'
+      const rows = await Promise.all(
+        capResult.rows.map(async (cap) => {
+          const turmaFilter = cap.turma
+            ? `AND payload->>'turma' = $2`
+            : `AND (payload->>'turma' IS NULL OR payload->>'turma' = '')`;
+          const countParams: unknown[] = [schoolId];
+          if (cap.turma) countParams.push(cap.turma);
+
+          const enrollResult = await pool.query<{ active: string }>(
+            `SELECT COUNT(*)::text AS active
+             FROM public.enrollments
+             WHERE school_id = $1::uuid
+               AND enrollment_status = 'active'
+               ${turmaFilter}`,
+            countParams
+          );
+
+          const active = parseInt(enrollResult.rows[0]?.active ?? "0", 10);
+          const legal = cap.legal_capacity !== null ? parseInt(cap.legal_capacity, 10) : null;
+          const operational = cap.operational_capacity !== null
+            ? parseInt(cap.operational_capacity, 10)
+            : null;
+
+          const operationalVacancy = operational !== null ? operational - active : null;
+          const legalVacancy = legal !== null ? legal - active : null;
+          const occupancyPct = operational && operational > 0
+            ? Math.round((active / operational) * 100 * 10) / 10
+            : null;
+
+          return {
+            turma: cap.turma ?? "Sem turma",
+            legalCapacity: legal,
+            operationalCapacity: operational,
+            activeEnrollments: active,
+            operationalVacancy,
+            legalVacancy,
+            occupancyPct,
+          };
+        })
+      );
+
+      // Sort: most occupied first
+      rows.sort((a, b) => (b.occupancyPct ?? 0) - (a.occupancyPct ?? 0));
+
+      res.json({ rows });
+    } catch (error) {
+      console.error("Vacancy by class error:", error);
+      res.status(500).json({ message: "Failed to fetch vacancy data" });
+    }
+  });
+
   return httpServer;
 }

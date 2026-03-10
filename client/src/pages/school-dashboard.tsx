@@ -84,6 +84,9 @@ import {
     CartesianGrid,
     Tooltip as RechartsTooltip,
     Legend,
+    PieChart,
+    Pie,
+    Cell,
 } from "recharts";
 import {
     TrendingUp,
@@ -100,8 +103,31 @@ import {
     Activity,
     Gauge,
     HeartPulse,
+    AlertCircle,
 } from "lucide-react";
 import type { KpiGoal, KpiDefinition } from "@shared/schema";
+import { useQuery } from "@tanstack/react-query";
+
+// ---------------------------------------------------------------------------
+// Types for new widgets
+// ---------------------------------------------------------------------------
+
+interface VacancyRow {
+    turma: string;
+    legalCapacity: number | null;
+    operationalCapacity: number | null;
+    activeEnrollments: number;
+    operationalVacancy: number | null;
+    occupancyPct: number | null;
+}
+
+interface ChurnByMotive {
+    motiveId: string | null;
+    code: string;
+    label: string;
+    isCritical: boolean;
+    count: number;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -310,6 +336,37 @@ export default function SchoolDashboardPage() {
         effectiveSchoolId,
         { from: periodFrom, to: periodTo }
     );
+
+    // Vacancy by class
+    const periodEndStr = periodTo.toISOString().slice(0, 10);
+    const { data: vacData, isLoading: vacLoading } = useQuery<{ rows: VacancyRow[]; hint?: string }>({
+        queryKey: ["vacancy-by-class", effectiveSchoolId, periodEndStr],
+        queryFn: async () => {
+            const r = await fetch(
+                `/api/schools/${effectiveSchoolId}/vacancy-by-class?period_end=${periodEndStr}`,
+                { credentials: "include" }
+            );
+            if (!r.ok) throw new Error("Failed to fetch vacancy data");
+            return r.json();
+        },
+        enabled: !!effectiveSchoolId,
+    });
+
+    // Churn distribution by motive
+    const { data: churnDist, isLoading: churnDistLoading } = useQuery<ChurnByMotive[]>({
+        queryKey: ["churn-by-motive", effectiveSchoolId, periodFrom.toISOString(), periodTo.toISOString()],
+        queryFn: async () => {
+            const params = new URLSearchParams({
+                school_id: effectiveSchoolId!,
+                period_start: periodFrom.toISOString(),
+                period_end: periodTo.toISOString(),
+            });
+            const r = await fetch(`/api/churn-events/by-motive?${params}`, { credentials: "include" });
+            if (!r.ok) throw new Error("Failed to fetch churn distribution");
+            return r.json();
+        },
+        enabled: !!effectiveSchoolId,
+    });
 
     const updateGoal = useUpdateSchoolKpiGoal(effectiveSchoolId);
     const [editingGoal, setEditingGoal] = useState<KpiGoal | null>(null);
@@ -631,6 +688,133 @@ export default function SchoolDashboardPage() {
                         />
                     </div>
 
+                    {/* ── Vacancy by Class Table ──────────────────────────────── */}
+                    {effectiveSchoolId && (
+                        <Card>
+                            <CardHeader className="pb-3">
+                                <CardTitle className="text-base">Vacância Detalhada por Turma</CardTitle>
+                                <CardDescription>{selectedSchoolName} · até {format(periodTo, "dd/MM/yy")}</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                {vacLoading ? (
+                                    <div className="space-y-2">
+                                        {[1, 2, 3].map(i => <Skeleton key={i} className="h-9 w-full" />)}
+                                    </div>
+                                ) : !vacData?.rows?.length ? (
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground py-4 justify-center">
+                                        <AlertCircle className="h-4 w-4" />
+                                        {vacData?.hint ?? "Nenhuma capacidade configurada para esta escola."}
+                                    </div>
+                                ) : (
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead>Turma</TableHead>
+                                                <TableHead className="text-right">Cap. Legal</TableHead>
+                                                <TableHead className="text-right">Cap. Op.</TableHead>
+                                                <TableHead className="text-right">Alunos Ativos</TableHead>
+                                                <TableHead className="text-right">Vagas Op.</TableHead>
+                                                <TableHead className="text-right">% Ocupação</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {vacData.rows.map((row) => {
+                                                const pct = row.occupancyPct;
+                                                let rowClass = "";
+                                                if (pct !== null) {
+                                                    if (pct >= 100) rowClass = "bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400";
+                                                    else if (pct >= 85) rowClass = "bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400";
+                                                }
+                                                return (
+                                                    <TableRow key={row.turma} className={rowClass}>
+                                                        <TableCell className="font-medium">{row.turma}</TableCell>
+                                                        <TableCell className="text-right">{row.legalCapacity ?? "—"}</TableCell>
+                                                        <TableCell className="text-right">{row.operationalCapacity ?? "—"}</TableCell>
+                                                        <TableCell className="text-right">{row.activeEnrollments}</TableCell>
+                                                        <TableCell className="text-right">
+                                                            {row.operationalVacancy !== null ? (
+                                                                <span className={row.operationalVacancy < 0 ? "text-rose-600 font-semibold" : ""}>
+                                                                    {row.operationalVacancy}
+                                                                </span>
+                                                            ) : "—"}
+                                                        </TableCell>
+                                                        <TableCell className="text-right">
+                                                            {row.occupancyPct !== null ? `${row.occupancyPct}%` : "—"}
+                                                        </TableCell>
+                                                    </TableRow>
+                                                );
+                                            })}
+                                        </TableBody>
+                                    </Table>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* ── Churn Distribution Chart ───────────────────────────── */}
+                    {effectiveSchoolId && (
+                        <Card>
+                            <CardHeader className="pb-3">
+                                <CardTitle className="text-base">Distribuição de Motivos de Churn</CardTitle>
+                                <CardDescription>{selectedSchoolName} · {periodLabel}</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                {churnDistLoading ? (
+                                    <Skeleton className="h-48 w-full" />
+                                ) : !churnDist?.length || (churnDist.reduce((sum, d) => sum + d.count, 0) === 0) ? (
+                                    <p className="text-sm text-muted-foreground text-center py-6">
+                                        Nenhum evento de churn registrado no período.
+                                    </p>
+                                ) : (
+                                    <div className="flex flex-col lg:flex-row items-center gap-6">
+                                        <ResponsiveContainer width="100%" height={220}>
+                                            <PieChart>
+                                                <Pie
+                                                    data={churnDist}
+                                                    dataKey="count"
+                                                    nameKey="label"
+                                                    cx="50%"
+                                                    cy="50%"
+                                                    outerRadius={90}
+                                                    label={({ label, percent }) =>
+                                                        `${label} (${(percent * 100).toFixed(0)}%)`
+                                                    }
+                                                >
+                                                    {churnDist.map((_, i) => (
+                                                        <Cell key={i} fill={["#e11d48", "#f59e0b", "#3b82f6", "#10b981", "#8b5cf6", "#64748b"][i % 6]} />
+                                                    ))}
+                                                </Pie>
+                                                <RechartsTooltip
+                                                    formatter={(value: number, name: string) => [
+                                                        `${value} evento${value !== 1 ? "s" : ""}`,
+                                                        name,
+                                                    ]}
+                                                />
+                                            </PieChart>
+                                        </ResponsiveContainer>
+                                        <div className="flex flex-col gap-2 min-w-[180px]">
+                                            {churnDist.map((d, i) => (
+                                                <div key={d.code} className="flex items-center gap-2 text-sm">
+                                                    <span
+                                                        className="inline-block h-3 w-3 rounded-full flex-shrink-0"
+                                                        style={{ background: ["#e11d48", "#f59e0b", "#3b82f6", "#10b981", "#8b5cf6", "#64748b"][i % 6] }}
+                                                    />
+                                                    <span className="flex-1 truncate">{d.label}</span>
+                                                    <Badge variant={d.isCritical ? "destructive" : "secondary"}>
+                                                        {d.count}
+                                                    </Badge>
+                                                </div>
+                                            ))}
+                                            <p className="text-xs text-muted-foreground mt-1">
+                                                Total: {churnDist.reduce((sum, d) => sum + d.count, 0)} evento{churnDist.reduce((sum, d) => sum + d.count, 0) !== 1 ? "s" : ""}
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
+
                     {/* Goal Attainment */}
                     <Card>
                         <CardHeader className="pb-3">
@@ -886,16 +1070,18 @@ export default function SchoolDashboardPage() {
             </Tabs>
 
             {/* ── Goal edit dialog ─────────────────────────────────────── */}
-            {editingGoal && (
-                <GoalEditDialog
-                    open={!!editingGoal}
-                    goal={editingGoal}
-                    kpiName={defsMap[editingGoal.kpiId]?.name ?? editingGoal.kpiId}
-                    onClose={() => setEditingGoal(null)}
-                    onSave={handleGoalSave}
-                    isPending={updateGoal.isPending}
-                />
-            )}
-        </div>
+            {
+                editingGoal && (
+                    <GoalEditDialog
+                        open={!!editingGoal}
+                        goal={editingGoal}
+                        kpiName={defsMap[editingGoal.kpiId]?.name ?? editingGoal.kpiId}
+                        onClose={() => setEditingGoal(null)}
+                        onSave={handleGoalSave}
+                        isPending={updateGoal.isPending}
+                    />
+                )
+            }
+        </div >
     );
 }

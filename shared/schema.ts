@@ -519,6 +519,51 @@ export const churnMotives = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Churn Events — audit log of churn detections (migration 019 + 037)
+// ---------------------------------------------------------------------------
+
+export const churnEvents = pgTable(
+  "churn_events",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    sourceType: varchar("source_type", { length: 20 }).notNull(), // 'lead' | 'enrollment'
+    sourceId: text("source_id").notNull(),
+    schoolId: uuid("school_id")
+      .notNull()
+      .references(() => schools.id, { onDelete: "cascade" }),
+    detectedAt: timestamp("detected_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    churnFlag: boolean("churn_flag").notNull().default(true),
+    churnReason: text("churn_reason"),
+    detectedBy: varchar("detected_by", { length: 20 })
+      .notNull()
+      .default("engine"), // 'engine' | 'manual'
+    payload: jsonb("payload").$type<Record<string, unknown>>().default({}),
+    // Migration 037 additions
+    motiveId: uuid("motive_id").references(() => churnMotives.id, {
+      onDelete: "restrict",
+    }),
+    notes: text("notes"),
+    churnDate: date("churn_date"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_churn_events_school_detected").on(
+      table.schoolId,
+      table.detectedAt
+    ),
+    index("idx_churn_events_motive_id").on(table.motiveId),
+    index("idx_churn_events_churn_date").on(table.schoolId, table.churnDate),
+  ]
+);
+
+export type ChurnEvent = typeof churnEvents.$inferSelect;
+export type InsertChurnEvent = typeof churnEvents.$inferInsert;
+
+// ---------------------------------------------------------------------------
 // Enrollments
 // ---------------------------------------------------------------------------
 
