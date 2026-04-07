@@ -2610,6 +2610,7 @@ export async function registerRoutes(
     "active_students",
     "total_discounts",
     "estimated_revenue",
+    "annual_revenue",
     "occupancy_rate",
     "contribution_margin",
     "ltv_cac_ratio",

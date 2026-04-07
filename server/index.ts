@@ -92,6 +92,42 @@ app.use((req, res, next) => {
     console.error("Failed to seed database:", error);
   }
 
+  // Ensure KPI definitions are up-to-date (idempotent, runs every startup)
+  try {
+    await pool.query(`
+      INSERT INTO public.kpi_definitions (key, name, description, calc_type, config, is_active)
+      VALUES (
+        'annual_revenue',
+        'Faturamento Anual',
+        'Faturamento anual projetado: SUM(payload.amount_gross) × 13 da planilha integrada (Coluna L).',
+        'js',
+        '{"js_snippet": "annual_revenue"}'::jsonb,
+        true
+      )
+      ON CONFLICT (key) DO NOTHING
+    `);
+    await pool.query(`
+      UPDATE public.kpi_definitions
+      SET description = 'Faturamento mensal: SUM(payload.amount_gross) da planilha integrada (Coluna L).',
+          name = 'Faturamento Mensal'
+      WHERE key = 'estimated_revenue'
+    `);
+    await pool.query(`
+      UPDATE public.kpi_definitions
+      SET description = 'Total de descontos: SUM(payload.amount_net) da planilha integrada (Coluna K).'
+      WHERE key = 'total_discounts'
+    `);
+    await pool.query(`
+      UPDATE public.kpi_definitions
+      SET description = 'Total de alunos ativos: contagem total de linhas da planilha integrada (enrollments).'
+      WHERE key = 'active_students'
+    `);
+    log("KPI definitions ensured", "startup");
+  } catch (error) {
+    console.error("Failed to ensure KPI definitions:", error);
+  }
+
+
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";

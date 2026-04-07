@@ -405,6 +405,12 @@ export default function SchoolDashboardPage() {
     const dso = getKpiValue("dso_days");
     const nps = getKpiValue("nps_score");
 
+    // Detect if this school has integration data (active_students > 0 from kpi_values).
+    // Schools without a synced spreadsheet (e.g. Vila Operária) will show "Sem dados".
+    const activeStudentsKpi = getKpiValue("active_students");
+    const hasIntegrationData = activeStudentsKpi !== null && activeStudentsKpi > 0;
+
+
     // Chart data: one entry per aggregate date
     const chartData = useMemo(() => {
         if (!aggregates?.length) return [];
@@ -485,21 +491,13 @@ export default function SchoolDashboardPage() {
                         <BreadcrumbLink href="/">Home</BreadcrumbLink>
                     </BreadcrumbItem>
                     <BreadcrumbSeparator />
-                    {(isAdmin || isExec) ? (
-                        <>
-                            <BreadcrumbItem>
-                                <BreadcrumbLink href="/exec-dashboard">Dashboard Executivo</BreadcrumbLink>
-                            </BreadcrumbItem>
-                            <BreadcrumbSeparator />
-                            <BreadcrumbItem>
-                                <BreadcrumbPage>{selectedSchoolName}</BreadcrumbPage>
-                            </BreadcrumbItem>
-                        </>
-                    ) : (
-                        <BreadcrumbItem>
-                            <BreadcrumbPage>Dashboard Escolar</BreadcrumbPage>
-                        </BreadcrumbItem>
-                    )}
+                    <BreadcrumbItem>
+                        <BreadcrumbLink href="/school-dashboard">Dashboard Escolar</BreadcrumbLink>
+                    </BreadcrumbItem>
+                    <BreadcrumbSeparator />
+                    <BreadcrumbItem>
+                        <BreadcrumbPage>{selectedSchoolName}</BreadcrumbPage>
+                    </BreadcrumbItem>
                 </BreadcrumbList>
             </Breadcrumb>
 
@@ -619,15 +617,15 @@ export default function SchoolDashboardPage() {
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                             <KpiCard
                                 title="Faturamento (Receita)"
-                                value={revenue !== null ? BRL(revenue) : "—"}
+                                value={hasIntegrationData && getKpiValue("estimated_revenue") !== null ? BRL(getKpiValue("estimated_revenue")!) : (revenue !== null && hasIntegrationData ? BRL(revenue) : "—")}
                                 icon={<DollarSign className="h-4 w-4" />}
-                                description={revenue === null ? "Sem dados" : undefined}
+                                description={!hasIntegrationData ? "Sem dados de integração" : undefined}
                             />
                             <KpiCard
-                                title="Novas Matrículas"
-                                value={latestMetrics["new_enrollments"] !== undefined ? NUM(latestMetrics["new_enrollments"]) : "—"}
+                                title="Alunos Ativos"
+                                value={hasIntegrationData && activeStudentsKpi !== null ? NUM(activeStudentsKpi) : "—"}
                                 icon={<Users className="h-4 w-4" />}
-                                description={latestMetrics["new_enrollments"] === undefined ? "Sem dados" : undefined}
+                                description={!hasIntegrationData ? "Sem dados de integração" : "Total de linhas da planilha"}
                             />
                             <KpiCard
                                 title="Taxa de Retenção"
@@ -637,9 +635,16 @@ export default function SchoolDashboardPage() {
                             />
                             <KpiCard
                                 title="Ticket Médio"
-                                value={latestMetrics["avg_ticket"] !== undefined ? BRL(latestMetrics["avg_ticket"]) : "—"}
+                                value={(() => {
+                                    const rev = getKpiValue("estimated_revenue");
+                                    const students = activeStudentsKpi;
+                                    if (hasIntegrationData && rev !== null && students && students > 0) {
+                                        return BRL(rev / students);
+                                    }
+                                    return "—";
+                                })()}
                                 icon={<DollarSign className="h-4 w-4" />}
-                                description={latestMetrics["avg_ticket"] === undefined ? "Sem dados" : undefined}
+                                description={!hasIntegrationData ? "Sem dados de integração" : "Receita ÷ Alunos Ativos"}
                             />
                             <KpiCard
                                 title="Taxa de Ocupação"
@@ -661,6 +666,7 @@ export default function SchoolDashboardPage() {
                                 data-testid="kpi-card-avg-conversion-time"
                             />
                         </div>
+
                     )}
 
                     {/* Seller Ranking Table */}

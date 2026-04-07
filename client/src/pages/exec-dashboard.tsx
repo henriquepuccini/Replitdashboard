@@ -87,7 +87,6 @@ import {
     Percent,
     Activity,
     Gauge,
-    Ratio,
     Tag,
 } from "lucide-react";
 
@@ -533,30 +532,28 @@ export default function ExecDashboardPage() {
                                     onClick={() => ceoDrill("active_students")}
                                 />
                                 <KpiCard
-                                    label="Faturamento Realizado"
-                                    value={
-                                        latest?.metrics["revenue"]
-                                            ? BRL(latest.metrics["revenue"])
-                                            : "—"
-                                    }
-                                    delta={delta("revenue")}
-                                    icon={<DollarSign className="h-4 w-4" />}
-                                />
-                                <KpiCard
-                                    label="Faturamento Estimado"
+                                    label="Faturamento Mensal"
                                     value={ceoVal("estimated_revenue", "brl")}
-                                    icon={<Target className="h-4 w-4" />}
+                                    icon={<DollarSign className="h-4 w-4" />}
                                     noData={!ceoHasData("estimated_revenue")}
                                     onClick={() => ceoDrill("estimated_revenue")}
                                 />
                                 <KpiCard
-                                    label="Taxa de Inadimplência"
-                                    value={ceoVal("dso", "pct")}
-                                    icon={<Ratio className="h-4 w-4" />}
-                                    noData={!ceoHasData("dso")}
-                                    onClick={() => ceoDrill("dso")}
+                                    label="Faturamento Anual (×13)"
+                                    value={ceoVal("annual_revenue", "brl")}
+                                    icon={<Target className="h-4 w-4" />}
+                                    noData={!ceoHasData("annual_revenue")}
+                                    onClick={() => ceoDrill("annual_revenue")}
+                                />
+                                <KpiCard
+                                    label="Total de Descontos"
+                                    value={ceoVal("total_discounts", "brl")}
+                                    icon={<Tag className="h-4 w-4" />}
+                                    noData={!ceoHasData("total_discounts")}
+                                    onClick={() => ceoDrill("total_discounts")}
                                 />
                             </div>
+
                         )}
                     </div>
 

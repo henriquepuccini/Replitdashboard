@@ -244,26 +244,26 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
 
   /**
    * Total de Alunos Ativos
-   * COUNT(DISTINCT payload->>'student_id') where status = 'ativo'.
-   * Falls back to COUNT(*) if student_id field is absent in payload.
+   * COUNT(*) total de linhas na tabela enrollments para a escola.
+   * Representa o total de alunos da planilha integrada (todas as linhas = 1 aluno).
+   * Não filtra por data pois a planilha representa o estado vigente.
    */
   active_students: {
-    description: "Total de alunos ativos (status = 'ativo') no período",
+    description: "Total de alunos ativos: contagem total de linhas da planilha integrada (enrollments)",
     fn: async (ctx) => {
-      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
-      const sf = schoolClause(ctx.schoolId, params);
+      const params: unknown[] = [];
+      const sf = ctx.schoolId
+        ? (params.push(ctx.schoolId), `WHERE school_id = $${params.length}::uuid`)
+        : "";
       const result = await ctx.pool.query<{
         total: string;
         distinct_students: string;
       }>(
         `SELECT
              COUNT(*)::text AS total,
-             COUNT(DISTINCT NULLIF(payload->>'student_id', ''))::text AS distinct_students
+             COUNT(DISTINCT NULLIF(payload->>'student_name', ''))::text AS distinct_students
            FROM enrollments
-           WHERE created_at >= $1::timestamptz
-             AND created_at < $2::timestamptz
-             AND (payload->>'status' = 'ativo' OR payload->>'status' IS NULL)
-             ${sf}`,
+           ${sf}`,
         params
       );
       const distinctStudents = parseInt(
@@ -271,103 +271,137 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
         10
       );
       const totalRows = parseInt(result.rows[0]?.total ?? "0", 10);
-      const value = distinctStudents > 0 ? distinctStudents : totalRows;
-      return { value, metadata: { distinctStudents, totalRows } };
+      // Use total rows as the authoritative count (each row = one student)
+      return { value: totalRows, metadata: { distinctStudents, totalRows } };
     },
   },
 
   /**
    * Total de Descontos Vigentes
-   * SUM(payments.payload->>'discount_amount') for the period.
+   * SUM(enrollments.payload->>'amount_net') — corresponde à Coluna K da planilha.
+   * Representa o total de descontos praticados (valor líquido de mensalidade).
    */
   total_discounts: {
     description:
-      "Soma total de descontos (bolsa + comercial) nos pagamentos do período",
+      "Soma total de descontos: SUM(amount_net) da planilha integrada (Coluna K)",
     fn: async (ctx) => {
-      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
-      const sf = schoolClause(ctx.schoolId, params);
+      const params: unknown[] = [];
+      const sf = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
       const result = await ctx.pool.query<{ total: string; count: string }>(
         `SELECT
-             COALESCE(SUM((payload->>'scholarship_discount')::numeric + (payload->>'commercial_discount')::numeric), 0)::text AS total,
+             COALESCE(SUM(
+               CASE
+                 WHEN payload->>'amount_net' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                 THEN (payload->>'amount_net')::numeric
+                 ELSE 0
+               END
+             ), 0)::text AS total,
              COUNT(*)::text AS count
-           FROM payments
-           WHERE created_at >= $1::timestamptz
-             AND created_at < $2::timestamptz
-             AND ((payload->>'scholarship_discount')::numeric > 0 OR (payload->>'commercial_discount')::numeric > 0)
+           FROM enrollments
+           WHERE payload->>'amount_net' IS NOT NULL
              ${sf}`,
         params
       );
       return {
         value: parseFloat(result.rows[0]?.total ?? "0"),
         metadata: {
-          paymentCount: parseInt(result.rows[0]?.count ?? "0", 10),
+          rowCount: parseInt(result.rows[0]?.count ?? "0", 10),
+          source: "enrollments.payload.amount_net (Coluna K)",
         },
       };
     },
   },
 
   /**
-   * Faturamento Estimado
-   * avg_ticket × active_students count for the period.
+   * Faturamento Mensal (Estimado)
+   * SUM(enrollments.payload->>'amount_gross') — Coluna L da planilha.
+   * Representa o faturamento bruto total (soma das mensalidades cheias).
    */
   estimated_revenue: {
     description:
-      "Faturamento estimado: ticket médio × total de alunos ativos",
+      "Faturamento mensal: SUM(amount_gross) da planilha integrada (Coluna L)",
     fn: async (ctx) => {
-      const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
-      const sf = schoolClause(ctx.schoolId, params);
+      const params: unknown[] = [];
+      const sf = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
 
-      const ticketResult = await ctx.pool.query<{ avg_val: string }>(
-        `SELECT COALESCE(AVG((payload->>'gross_value')::numeric), 0)::text AS avg_val
-           FROM payments
-           WHERE created_at >= $1::timestamptz
-             AND created_at < $2::timestamptz ${sf}`,
-        params
-      );
-
-      const studentsResult = await ctx.pool.query<{
+      const result = await ctx.pool.query<{
         total: string;
-        distinct_students: string;
-        direct_revenue: string;
+        count: string;
       }>(
         `SELECT
-             COUNT(*)::text AS total,
-             COUNT(DISTINCT NULLIF(payload->>'student_id', ''))::text AS distinct_students,
-             SUM(
-               CASE 
-                 WHEN payload->>'amount_net' ~ '^-?[0-9]+(\\.[0-9]+)?$' 
-                 THEN (payload->>'amount_net')::numeric 
-                 ELSE 0 
+             COALESCE(SUM(
+               CASE
+                 WHEN payload->>'amount_gross' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                 THEN (payload->>'amount_gross')::numeric
+                 ELSE 0
                END
-             )::text AS direct_revenue
+             ), 0)::text AS total,
+             COUNT(*)::text AS count
            FROM enrollments
-           WHERE created_at >= $1::timestamptz
-             AND created_at < $2::timestamptz
-             AND (payload->>'status' = 'ativo' OR payload->>'status' IS NULL)
+           WHERE payload->>'amount_gross' IS NOT NULL
              ${sf}`,
         params
       );
 
-      const avgTicket = parseFloat(ticketResult.rows[0]?.avg_val ?? "0");
-      const ds = parseInt(
-        studentsResult.rows[0]?.distinct_students ?? "0",
-        10
+      const totalRevenue = parseFloat(result.rows[0]?.total ?? "0");
+      const rowCount = parseInt(result.rows[0]?.count ?? "0", 10);
+
+      return {
+        value: Math.round(totalRevenue * 100) / 100,
+        metadata: {
+          rowCount,
+          source: "enrollments.payload.amount_gross (Coluna L)",
+          avgTicket: rowCount > 0 ? Math.round((totalRevenue / rowCount) * 100) / 100 : 0,
+        },
+      };
+    },
+  },
+
+  /**
+   * Faturamento Anual
+   * SUM(amount_gross) × 13 — projeção anual com 13ª mensalidade.
+   */
+  annual_revenue: {
+    description:
+      "Faturamento anual: SUM(amount_gross) × 13 (Coluna L × 13 meses)",
+    fn: async (ctx) => {
+      const params: unknown[] = [];
+      const sf = ctx.schoolId
+        ? (params.push(ctx.schoolId), `AND school_id = $${params.length}::uuid`)
+        : "";
+
+      const result = await ctx.pool.query<{
+        total: string;
+      }>(
+        `SELECT
+             COALESCE(SUM(
+               CASE
+                 WHEN payload->>'amount_gross' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                 THEN (payload->>'amount_gross')::numeric
+                 ELSE 0
+               END
+             ), 0)::text AS total
+           FROM enrollments
+           WHERE payload->>'amount_gross' IS NOT NULL
+             ${sf}`,
+        params
       );
-      const ts = parseInt(studentsResult.rows[0]?.total ?? "0", 10);
-      const students = ds > 0 ? ds : ts;
-      
-      const directRev = parseFloat(studentsResult.rows[0]?.direct_revenue ?? "0");
-      
-      let estimated = 0;
-      let usedDirect = false;
-      if (directRev > 0) {
-        estimated = Math.round(directRev * 100) / 100;
-        usedDirect = true;
-      } else {
-        estimated = Math.round(avgTicket * students * 100) / 100;
-      }
-      
-      return { value: estimated, metadata: { avgTicket, students, directRev, usedDirect } };
+
+      const monthly = parseFloat(result.rows[0]?.total ?? "0");
+      const annual = Math.round(monthly * 13 * 100) / 100;
+
+      return {
+        value: annual,
+        metadata: {
+          monthlyRevenue: monthly,
+          multiplier: 13,
+          source: "enrollments.payload.amount_gross (Coluna L) × 13",
+        },
+      };
     },
   },
 
