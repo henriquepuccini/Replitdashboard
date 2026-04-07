@@ -36,8 +36,16 @@ interface SyncError {
 }
 
 function getTargetTable(
-  connectorType: ConnectorType
+  connector: Connector
 ): "leads" | "payments" | "enrollments" {
+  const config = connector.config as Record<string, unknown>;
+  const connectorType = connector.type as ConnectorType;
+
+  // For Google Sheets, allow overriding the target table via config
+  if (connectorType === "google_sheets" && (config.targetTable === "payments" || config.targetTable === "enrollments" || config.targetTable === "leads")) {
+    return config.targetTable;
+  }
+
   switch (connectorType) {
     case "crm":
     case "google_sheets":
@@ -155,7 +163,7 @@ export async function runConnector(
   }
 
   const config = connector.config as unknown as ApiClientConfig;
-  const targetTable = getTargetTable(connector.type as ConnectorType);
+  const targetTable = getTargetTable(connector);
   const configAny = config as unknown as Record<string, unknown>;
   const sourceIdField = (configAny.sourceIdField as string) || "id";
   const defaultSchoolId = (configAny.schoolId as string) || null;
@@ -227,8 +235,16 @@ export async function runConnector(
           }
         }
 
-        const schoolId =
-          (transformResult.payload.school_id as string) || defaultSchoolId;
+        const payloadSchoolId = transformResult.payload.school_id as string;
+        let schoolId = defaultSchoolId;
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        if (payloadSchoolId && uuidRegex.test(payloadSchoolId)) {
+          schoolId = payloadSchoolId;
+        } else if (defaultSchoolId && uuidRegex.test(defaultSchoolId)) {
+          schoolId = defaultSchoolId;
+        } else {
+          schoolId = null;
+        }
 
         if (options.dryRun) {
           recordsOut++;

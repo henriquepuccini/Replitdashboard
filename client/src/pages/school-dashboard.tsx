@@ -373,7 +373,7 @@ export default function SchoolDashboardPage() {
     const [isExporting, setIsExporting] = useState(false);
 
     // Last freshness from most recent aggregate
-    const latestAggregate = aggregates?.[aggregates.length - 1];
+    const latestAggregate = aggregates?.[0]; // [0] is latest since we sort DESC
     const freshness = latestAggregate?.computedAt
         ? formatDistanceToNow(parseISO(latestAggregate.computedAt), {
             addSuffix: true,
@@ -390,9 +390,9 @@ export default function SchoolDashboardPage() {
 
     // Top KPI metrics from latest aggregate
     const latestMetrics = latestAggregate?.metrics ?? {};
-    const conversion = latestMetrics["conversion_rate"] ?? null;
-    const revenue = latestMetrics["revenue"] ?? null;
-    const churn = latestMetrics["churn_rate"] ?? null;
+    const conversion = latestMetrics["lead_conversion_rate"] ?? null;
+    const revenue = latestMetrics["estimated_revenue"] ?? latestMetrics["total_revenue"] ?? null;
+    const churn = latestMetrics["churn_rate"] ?? (latestMetrics["retention_rate"] ? (1 - latestMetrics["retention_rate"]) : null);
 
     // Tactical KPIs from kpisData (kpi_values table)
     const getKpiValue = (key: string) => {
@@ -633,19 +633,19 @@ export default function SchoolDashboardPage() {
                                 title="Taxa de Retenção"
                                 value={churn !== null ? PCT(1 - churn) : "—"}
                                 icon={<Activity className="h-4 w-4" />}
-                                description={churn === null ? "Sem dados" : "Calculado: 1 - Churn"}
+                                description={churn === null ? "Sem dados" : undefined}
                             />
                             <KpiCard
                                 title="Ticket Médio"
-                                value={latestMetrics["average_ticket"] !== undefined ? BRL(latestMetrics["average_ticket"]) : "—"}
+                                value={latestMetrics["avg_ticket"] !== undefined ? BRL(latestMetrics["avg_ticket"]) : "—"}
                                 icon={<DollarSign className="h-4 w-4" />}
-                                description={latestMetrics["average_ticket"] === undefined ? "Sem dados" : undefined}
+                                description={latestMetrics["avg_ticket"] === undefined ? "Sem dados" : undefined}
                             />
                             <KpiCard
                                 title="Taxa de Ocupação"
-                                value={getKpiValue("occupancy_rate") !== null ? PCT(getKpiValue("occupancy_rate")!) : "—"}
+                                value={latestMetrics["occupancy_rate"] !== undefined ? PCT(latestMetrics["occupancy_rate"]) : (getKpiValue("occupancy_rate") !== null ? PCT(getKpiValue("occupancy_rate")!) : "—")}
                                 icon={<Gauge className="h-4 w-4" />}
-                                description={getKpiValue("occupancy_rate") === null ? "Sem dados" : undefined}
+                                description={latestMetrics["occupancy_rate"] === undefined && getKpiValue("occupancy_rate") === null ? "Sem dados" : undefined}
                             />
                             <KpiCard
                                 title="NPS"
@@ -654,10 +654,10 @@ export default function SchoolDashboardPage() {
                                 description={nps === null ? "Sem dados" : undefined}
                             />
                             <KpiCard
-                                title="Tempo Médio de Conversão"
-                                value={getKpiValue("avg_conversion_time") !== null ? `${NUM(getKpiValue("avg_conversion_time")!)} dias` : "—"}
+                                title="Tempo Médio por Estágio"
+                                value={latestMetrics["avg_stage_time"] !== undefined ? `${NUM(latestMetrics["avg_stage_time"])} dias` : (getKpiValue("avg_stage_time") !== null ? `${NUM(getKpiValue("avg_stage_time")!)} dias` : "—")}
                                 icon={<Clock className="h-4 w-4" />}
-                                description={getKpiValue("avg_conversion_time") === null ? "Sem conversões no período" : "Lead → Matrícula"}
+                                description={latestMetrics["avg_stage_time"] === undefined && getKpiValue("avg_stage_time") === null ? "Sem conversões no período" : "Lead → Matrícula"}
                                 data-testid="kpi-card-avg-conversion-time"
                             />
                         </div>

@@ -103,6 +103,7 @@ const createConnectorSchema = z.discriminatedUnion("type", [
     spreadsheetId: z.string().min(1, "Spreadsheet ID é obrigatório"),
     sheetName: z.string().min(1, "Nome da Aba é obrigatório"),
     sheetRange: z.string().optional().or(z.literal("")),
+    targetTable: z.enum(["leads", "payments", "enrollments"]).default("leads"),
   }),
   baseSchema.extend({
     type: z.literal("manual_input"),
@@ -170,6 +171,7 @@ export default function IntegrationsPage() {
       config.spreadsheetId = data.spreadsheetId;
       config.sheetName = data.sheetName;
       if (data.sheetRange) config.range = data.sheetRange;
+      config.targetTable = data.targetTable;
       // OAuth credentials must be added later via connector detail page / API
     } else if (data.type !== "manual_input") {
       if (data.baseUrl) config.baseUrl = data.baseUrl;
@@ -337,6 +339,31 @@ export default function IntegrationsPage() {
                                 {...field}
                                 value={field.value ?? ""}
                               />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="targetTable"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Tabela de Destino</FormLabel>
+                            <FormControl>
+                              <Select
+                                value={field.value}
+                                onValueChange={field.onChange}
+                              >
+                                <SelectTrigger data-testid="select-connector-target-table">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="leads">Leads (Pipeline)</SelectItem>
+                                  <SelectItem value="payments">Pagamentos (Financeiro)</SelectItem>
+                                  <SelectItem value="enrollments">Matrículas (Acadêmico)</SelectItem>
+                                </SelectContent>
+                              </Select>
                             </FormControl>
                             <FormMessage />
                           </FormItem>

@@ -140,4 +140,33 @@ app.use((req, res, next) => {
     }
   }, REFRESH_INTERVAL_MS);
   log(`Pipeline aggregation refresh scheduled every ${REFRESH_INTERVAL_MS / 1000}s`, "scheduler");
+  const CONNECTOR_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      const { storage } = await import("./storage");
+      const { runConnector } = await import("./connectors/sync-engine");
+      
+      log("Starting automatic connector sync...", "scheduler");
+      const connectors = await storage.getConnectors();
+      const activeConnectors = connectors.filter((c: any) => c.isActive);
+      
+      for (const connector of activeConnectors) {
+        try {
+          // Verify if mapping exists before running to avoid throwing errors if it's incomplete
+          const mappings = await storage.getConnectorMappings(connector.id);
+          if (mappings.length > 0) {
+            log(`Syncing connector ${connector.id} (${connector.name})...`, "scheduler");
+            await runConnector(connector.id);
+          }
+        } catch (err) {
+          console.error(`Automated sync failed for connector ${connector.id}:`, err);
+        }
+      }
+      log("Automatic connector sync completed", "scheduler");
+    } catch (err) {
+      console.error("Failed during automated connector sync schedule:", err);
+    }
+  }, CONNECTOR_SYNC_INTERVAL_MS);
+  log(`Automatic connector sync scheduled every ${CONNECTOR_SYNC_INTERVAL_MS / 1000}s`, "scheduler");
+
 })();

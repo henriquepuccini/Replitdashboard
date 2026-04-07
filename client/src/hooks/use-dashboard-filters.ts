@@ -1,4 +1,4 @@
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useCallback, useMemo } from "react";
 
 /**
@@ -20,10 +20,10 @@ const DEFAULT_FILTERS: DashboardFilters = {
 
 export function useDashboardFilters() {
     const [location, setLocation] = useLocation();
+    const searchParams = useSearch();
 
-    // Extract search params from window.location since wouter's useLocation
-    // only returns the pathname by default in version 3.x
-    const search = typeof window !== "undefined" ? window.location.search : "";
+    // Ensure search string begins with '?' for URLSearchParams
+    const search = searchParams ? `?${searchParams}` : "";
 
     // Parse current URL filters with stable reference
     const filters = useMemo<DashboardFilters>(() => {

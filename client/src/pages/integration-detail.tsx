@@ -43,6 +43,7 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -88,6 +89,8 @@ const TYPE_LABELS: Record<string, string> = {
   crm: "CRM",
   finance: "Financeiro",
   academic: "Acadêmico",
+  google_sheets: "Google Sheets",
+  manual_input: "Input Manual",
 };
 
 const STATUS_CONFIG: Record<
@@ -166,7 +169,7 @@ function SecureInput({
 
 const configSchema = z.object({
   name: z.string().min(1, "Nome é obrigatório"),
-  type: z.enum(["crm", "finance", "academic"]),
+  type: z.enum(["crm", "finance", "academic", "google_sheets", "manual_input"]),
   baseUrl: z.string().optional().or(z.literal("")),
   apiKey: z.string().optional().or(z.literal("")),
   dataPath: z.string().optional().or(z.literal("")),
@@ -175,6 +178,15 @@ const configSchema = z.object({
   pageSize: z.string().optional().or(z.literal("")),
   scheduleCron: z.string().optional().or(z.literal("")),
   schoolId: z.string().optional().or(z.literal("")),
+  // Google Sheets
+  spreadsheetId: z.string().optional().or(z.literal("")),
+  sheetName: z.string().optional().or(z.literal("")),
+  range: z.string().optional().or(z.literal("")),
+  targetTable: z.enum(["leads", "payments", "enrollments"]).optional().or(z.literal("")),
+  oauthClientId: z.string().optional().or(z.literal("")),
+  oauthClientSecret: z.string().optional().or(z.literal("")),
+  oauthRefreshToken: z.string().optional().or(z.literal("")),
+  firstRowIsHeader: z.boolean().optional(),
 });
 
 type ConfigFormValues = z.infer<typeof configSchema>;
@@ -226,7 +238,7 @@ function ConfigTab({ connectorId }: { connectorId: string }) {
     resolver: zodResolver(configSchema),
     values: {
       name: connector?.name || "",
-      type: (connector?.type as "crm" | "finance" | "academic") || "crm",
+      type: (connector?.type as any) || "crm",
       baseUrl: (config.baseUrl as string) || "",
       apiKey: config.apiKey ? "••••••••" : "",
       dataPath: (config.dataPath as string) || "",
@@ -235,6 +247,15 @@ function ConfigTab({ connectorId }: { connectorId: string }) {
       pageSize: config.pageSize ? String(config.pageSize) : "",
       scheduleCron: connector?.scheduleCron || "",
       schoolId: (config.schoolId as string) || "",
+      // Google Sheets
+      spreadsheetId: (config.spreadsheetId as string) || "",
+      sheetName: (config.sheetName as string) || "",
+      range: (config.range as string) || "",
+      targetTable: (config.targetTable as any) || "leads",
+      oauthClientId: (config.oauth as any)?.clientId || "",
+      oauthClientSecret: (config.oauth as any)?.clientSecret ? "••••••••" : "",
+      oauthRefreshToken: (config.oauth as any)?.refreshToken ? "••••••••" : "",
+      firstRowIsHeader: config.firstRowIsHeader !== false,
     },
   });
 
@@ -242,22 +263,46 @@ function ConfigTab({ connectorId }: { connectorId: string }) {
     const newConfig: Record<string, unknown> = { ...config };
     if (data.baseUrl) newConfig.baseUrl = data.baseUrl;
     else delete newConfig.baseUrl;
+
     if (data.apiKey && data.apiKey !== "••••••••") newConfig.apiKey = data.apiKey;
     else if (!data.apiKey) delete newConfig.apiKey;
+
     if (data.dataPath) newConfig.dataPath = data.dataPath;
     else delete newConfig.dataPath;
+
     if (data.sourceIdField) newConfig.sourceIdField = data.sourceIdField;
     else delete newConfig.sourceIdField;
+
     if (data.paginationType) newConfig.paginationType = data.paginationType;
     else delete newConfig.paginationType;
+
     if (data.pageSize) newConfig.pageSize = parseInt(data.pageSize, 10) || 100;
     else delete newConfig.pageSize;
+
     if (data.schoolId) newConfig.schoolId = data.schoolId;
     else delete newConfig.schoolId;
 
+    // Google Sheets fields
+    if (data.type === "google_sheets") {
+      newConfig.spreadsheetId = data.spreadsheetId;
+      newConfig.sheetName = data.sheetName;
+      newConfig.range = data.range;
+      newConfig.targetTable = data.targetTable;
+      newConfig.firstRowIsHeader = data.firstRowIsHeader;
+
+      const oauth = (newConfig.oauth as any) || {};
+      if (data.oauthClientId) oauth.clientId = data.oauthClientId;
+      if (data.oauthClientSecret && data.oauthClientSecret !== "••••••••")
+        oauth.clientSecret = data.oauthClientSecret;
+      if (data.oauthRefreshToken && data.oauthRefreshToken !== "••••••••")
+        oauth.refreshToken = data.oauthRefreshToken;
+
+      newConfig.oauth = oauth;
+    }
+
     updateMutation.mutate({
       name: data.name,
-      type: data.type,
+      type: data.type as any,
       config: newConfig,
       scheduleCron: data.scheduleCron || null,
     });
@@ -321,121 +366,296 @@ function ConfigTab({ connectorId }: { connectorId: string }) {
 
         <Separator />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <FormField
-            control={form.control}
-            name="baseUrl"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>URL Base</FormLabel>
-                <FormControl>
-                  <Input
-                    placeholder="https://api.exemplo.com"
-                    data-testid="input-config-url"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="apiKey"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Chave API</FormLabel>
-                <FormControl>
-                  <SecureInput
-                    value={field.value || ""}
-                    onChange={field.onChange}
-                    placeholder="sk-..."
-                    testId="input-config-apikey"
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="dataPath"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Caminho dos dados (JSON Path)</FormLabel>
-                <FormControl>
-                  <Input
-                    placeholder="data.results"
-                    data-testid="input-config-datapath"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="sourceIdField"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Campo de ID na origem</FormLabel>
-                <FormControl>
-                  <Input
-                    placeholder="id"
-                    data-testid="input-config-sourceid"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="paginationType"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Tipo de paginação</FormLabel>
-                <FormControl>
-                  <Select
-                    value={field.value || "none"}
-                    onValueChange={field.onChange}
-                  >
-                    <SelectTrigger data-testid="select-config-pagination">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Nenhuma</SelectItem>
-                      <SelectItem value="offset">Offset</SelectItem>
-                      <SelectItem value="cursor">Cursor</SelectItem>
-                      <SelectItem value="page">Página</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="pageSize"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Tamanho da página</FormLabel>
-                <FormControl>
-                  <Input
-                    type="number"
-                    placeholder="100"
-                    data-testid="input-config-pagesize"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        </div>
+        <Separator />
+
+        {form.watch("type") === "google_sheets" ? (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="spreadsheetId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>ID da Planilha (Spreadsheet ID)</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+                        data-testid="input-config-spreadsheet"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="sheetName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Nome da Aba (Tab Name)</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="Página1"
+                        data-testid="input-config-sheetname"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="range"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Intervalo (Range)</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="A1:Z2000"
+                        data-testid="input-config-range"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="targetTable"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Tabela de Destino</FormLabel>
+                    <FormControl>
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger data-testid="select-config-target-table">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="leads">Leads (Pipeline)</SelectItem>
+                          <SelectItem value="payments">Pagamentos (Financeiro)</SelectItem>
+                          <SelectItem value="enrollments">Matrículas (Acadêmico)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
+              <FormField
+                control={form.control}
+                name="apiKey"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Chave de API (Opcional - para Planilhas Públicas)</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="AIza..."
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      Use uma Chave de API se a planilha for pública. Para planilhas privadas, use OAuth abaixo.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="bg-muted/50 p-4 rounded-lg border border-border">
+              <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                <Settings className="h-4 w-4" />
+                Configurações Google OAuth
+              </h4>
+              <p className="text-xs text-muted-foreground mb-4">
+                Para conectar sua planilha, você precisa criar um projeto no{" "}
+                <a
+                  href="https://console.cloud.google.com/"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="text-primary hover:underline"
+                >
+                  Google Cloud Console
+                </a>{" "}
+                e configurar as credenciais OAuth 2.0.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
+                <FormField
+                  control={form.control}
+                  name="oauthClientId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs">Client ID</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="Ex: 12345678-abcde.apps.googleusercontent.com"
+                          className="text-xs h-8"
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="oauthClientSecret"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs">Client Secret</FormLabel>
+                      <FormControl>
+                        <SecureInput
+                          value={field.value || ""}
+                          onChange={field.onChange}
+                          placeholder="••••••••"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="oauthRefreshToken"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-xs">Refresh Token</FormLabel>
+                      <FormControl>
+                        <SecureInput
+                          value={field.value || ""}
+                          onChange={field.onChange}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <FormField
+              control={form.control}
+              name="baseUrl"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>URL Base</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder="https://api.exemplo.com"
+                      data-testid="input-config-url"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="apiKey"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Chave API</FormLabel>
+                  <FormControl>
+                    <SecureInput
+                      value={field.value || ""}
+                      onChange={field.onChange}
+                      placeholder="sk-..."
+                      testId="input-config-apikey"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="dataPath"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Caminho dos dados (JSON Path)</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder="data.results"
+                      data-testid="input-config-datapath"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="sourceIdField"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Campo de ID na origem</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder="id"
+                      data-testid="input-config-sourceid"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="paginationType"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Tipo de paginação</FormLabel>
+                  <FormControl>
+                    <Select
+                      value={field.value || "none"}
+                      onValueChange={field.onChange}
+                    >
+                      <SelectTrigger data-testid="select-config-pagination">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Nenhuma</SelectItem>
+                        <SelectItem value="offset">Offset</SelectItem>
+                        <SelectItem value="cursor">Cursor</SelectItem>
+                        <SelectItem value="page">Página</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="pageSize"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Tamanho da página</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      placeholder="100"
+                      data-testid="input-config-pagesize"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+        )}
 
         <Separator />
 

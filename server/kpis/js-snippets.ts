@@ -124,7 +124,7 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const params: unknown[] = [ctx.periodStart, ctx.periodEnd];
       const sf = schoolClause(ctx.schoolId, params);
       const result = await ctx.pool.query(
-        `SELECT COALESCE(SUM(gross_value), 0) AS total
+        `SELECT COALESCE(SUM((payload->>'gross_value')::numeric), 0) AS total
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz ${sf}`,
@@ -153,10 +153,10 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
         count: string;
       }>(
         `SELECT
-           COALESCE(SUM(net_value), 0)::text            AS net,
-           COALESCE(SUM(gross_value), 0)::text          AS gross,
-           COALESCE(SUM(scholarship_discount), 0)::text AS scholarship,
-           COALESCE(SUM(commercial_discount), 0)::text  AS commercial,
+           COALESCE(SUM((payload->>'net_value')::numeric), 0)::text            AS net,
+           COALESCE(SUM((payload->>'gross_value')::numeric), 0)::text          AS gross,
+           COALESCE(SUM((payload->>'scholarship_discount')::numeric), 0)::text AS scholarship,
+           COALESCE(SUM((payload->>'commercial_discount')::numeric), 0)::text  AS commercial,
            COUNT(*)::text                               AS count
          FROM public.payments
          WHERE created_at >= $1::timestamptz
@@ -226,7 +226,7 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const sf = schoolClause(ctx.schoolId, params);
       const result = await ctx.pool.query(
         `SELECT
-             COALESCE(AVG(gross_value), 0) AS avg_val,
+             COALESCE(AVG((payload->>'gross_value')::numeric), 0) AS avg_val,
              COUNT(*)::int AS count
            FROM payments
            WHERE created_at >= $1::timestamptz
@@ -288,12 +288,12 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const sf = schoolClause(ctx.schoolId, params);
       const result = await ctx.pool.query<{ total: string; count: string }>(
         `SELECT
-             COALESCE(SUM(scholarship_discount + commercial_discount), 0)::text AS total,
+             COALESCE(SUM((payload->>'scholarship_discount')::numeric + (payload->>'commercial_discount')::numeric), 0)::text AS total,
              COUNT(*)::text AS count
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz
-             AND (scholarship_discount > 0 OR commercial_discount > 0)
+             AND ((payload->>'scholarship_discount')::numeric > 0 OR (payload->>'commercial_discount')::numeric > 0)
              ${sf}`,
         params
       );
@@ -318,7 +318,7 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const sf = schoolClause(ctx.schoolId, params);
 
       const ticketResult = await ctx.pool.query<{ avg_val: string }>(
-        `SELECT COALESCE(AVG(gross_value), 0)::text AS avg_val
+        `SELECT COALESCE(AVG((payload->>'gross_value')::numeric), 0)::text AS avg_val
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz ${sf}`,
@@ -328,10 +328,18 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const studentsResult = await ctx.pool.query<{
         total: string;
         distinct_students: string;
+        direct_revenue: string;
       }>(
         `SELECT
              COUNT(*)::text AS total,
-             COUNT(DISTINCT NULLIF(payload->>'student_id', ''))::text AS distinct_students
+             COUNT(DISTINCT NULLIF(payload->>'student_id', ''))::text AS distinct_students,
+             SUM(
+               CASE 
+                 WHEN payload->>'amount_net' ~ '^-?[0-9]+(\\.[0-9]+)?$' 
+                 THEN (payload->>'amount_net')::numeric 
+                 ELSE 0 
+               END
+             )::text AS direct_revenue
            FROM enrollments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz
@@ -347,8 +355,19 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       );
       const ts = parseInt(studentsResult.rows[0]?.total ?? "0", 10);
       const students = ds > 0 ? ds : ts;
-      const estimated = Math.round(avgTicket * students * 100) / 100;
-      return { value: estimated, metadata: { avgTicket, students } };
+      
+      const directRev = parseFloat(studentsResult.rows[0]?.direct_revenue ?? "0");
+      
+      let estimated = 0;
+      let usedDirect = false;
+      if (directRev > 0) {
+        estimated = Math.round(directRev * 100) / 100;
+        usedDirect = true;
+      } else {
+        estimated = Math.round(avgTicket * students * 100) / 100;
+      }
+      
+      return { value: estimated, metadata: { avgTicket, students, directRev, usedDirect } };
     },
   },
 
@@ -639,7 +658,7 @@ const snippetRegistry: Record<string, { description: string; fn: SnippetFn }> =
       const sf = schoolClause(ctx.schoolId, params);
 
       const revenueResult = await ctx.pool.query<{ total: string }>(
-        `SELECT COALESCE(SUM(gross_value), 0)::text AS total
+        `SELECT COALESCE(SUM((payload->>'gross_value')::numeric), 0)::text AS total
            FROM payments
            WHERE created_at >= $1::timestamptz
              AND created_at < $2::timestamptz ${sf}`,
@@ -772,7 +791,7 @@ Object.assign(snippetRegistry, {
         ? (revParams.push(ctx.schoolId), `AND school_id = $${revParams.length}::uuid`)
         : "";
       const revResult = await ctx.pool.query<{ total: string }>(
-        `SELECT COALESCE(SUM(gross_value), 0)::text AS total
+        `SELECT COALESCE(SUM((payload->>'gross_value')::numeric), 0)::text AS total
          FROM payments
          WHERE created_at >= $1::timestamptz
            AND created_at < $2::timestamptz ${revSf}`,

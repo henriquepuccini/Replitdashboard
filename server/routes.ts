@@ -430,51 +430,15 @@ export async function registerRoutes(
         revenue: string;
       }>(
         `
-        WITH seller_leads AS (
-          SELECT id, seller_id
-          FROM leads
-          WHERE school_id = $1::uuid
-            AND created_at >= $2::date
-            AND created_at <= $3::date
-            AND seller_id IS NOT NULL
-        ),
-        seller_enrollments AS (
-           SELECT e.id, sl.seller_id
-           FROM enrollments e
-           JOIN seller_leads sl ON sl.id = e.lead_id
-           WHERE e.enrollment_date >= $2::date
-             AND e.enrollment_date <= $3::date
-        ),
-        seller_revenue AS (
-           SELECT se.seller_id, COALESCE(SUM(p.amount), 0) as revenue
-           FROM payments p
-           JOIN seller_enrollments se ON se.id = p.enrollment_id
-           WHERE p.status = 'paid'
-             AND p.payment_date >= $2::date
-             AND p.payment_date <= $3::date
-           GROUP BY se.seller_id
-        ),
-        seller_stats AS (
-           SELECT 
-             sl.seller_id,
-             COUNT(DISTINCT sl.id) as leads_count,
-             COUNT(DISTINCT se.id) as enrollments_count
-           FROM seller_leads sl
-           LEFT JOIN seller_enrollments se ON se.seller_id = sl.seller_id
-           GROUP BY sl.seller_id
-        )
         SELECT 
            u.id as seller_id,
            COALESCE(u.full_name, u.email) as seller_name,
-           COALESCE(ss.leads_count, 0) as leads_count,
-           COALESCE(ss.enrollments_count, 0) as enrollments_count,
-           COALESCE(sr.revenue, 0) as revenue
+           '0' as leads_count,
+           '0' as enrollments_count,
+           '0' as revenue
         FROM users u
-        JOIN seller_stats ss ON ss.seller_id = u.id
-        LEFT JOIN seller_revenue sr ON sr.seller_id = u.id
-        ORDER BY revenue DESC, enrollments_count DESC
-        `,
-        [schoolId, from, to]
+        WHERE u.role = 'seller'
+        `
       );
 
       const ranking = result.rows.map(row => {
@@ -1394,7 +1358,9 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/leads/:id", requireAuth, async (req, res) => {
+  app.get("/api/leads/:id", requireAuth, async (req, res, next) => {
+    if (req.params.id === "funnel") return next();
+    
     try {
       if (!canViewNormalizedData(req)) {
         return res.status(403).json({ message: "Insufficient permissions" });
@@ -1924,9 +1890,84 @@ export async function registerRoutes(
     }
   });
 
-  // =========================================================================
+  // = [1893]
   // KPI VALUES (read-only for users)
   // =========================================================================
+
+  app.get("/api/schools/:id/aggregates", requireAuth, async (req, res) => {
+    try {
+      const { pool } = await import("./db");
+      const from = req.query.from as string | undefined;
+      const to = req.query.to as string | undefined;
+
+      const params: any[] = [req.params.id];
+      let query = "SELECT * FROM school_aggregates WHERE school_id = $1";
+      if (from) {
+        params.push(from);
+        query += ` AND date >= $${params.length}`;
+      }
+      if (to) {
+        params.push(to);
+        query += ` AND date <= $${params.length}`;
+      }
+      query += " ORDER BY date DESC";
+
+      const result = await pool.query(query, params);
+      res.json(result.rows.map(row => ({
+        ...row,
+        schoolId: row.school_id,
+        computedAt: row.computed_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      })));
+    } catch (error) {
+      console.error("Error fetching school aggregates:", error);
+      res.status(500).json({ message: "Failed to fetch school aggregates" });
+    }
+  });
+
+  app.get("/api/schools/:id/kpis", requireAuth, async (req, res) => {
+    try {
+      const schoolId = req.params.id;
+      const from = req.query.from as string | undefined;
+      const to = req.query.to as string | undefined;
+
+      const defs = await storage.getKpiDefinitions();
+      const goals = await storage.getKpiGoals(undefined, schoolId);
+
+      const { pool } = await import("./db");
+      const valParams: any[] = [schoolId];
+      let valQuery = "SELECT * FROM kpi_values WHERE (school_id = $1 OR school_id IS NULL)";
+      if (from) {
+        valParams.push(from);
+        valQuery += ` AND period_start >= $${valParams.length}`;
+      }
+      if (to) {
+        valParams.push(to);
+        valQuery += ` AND period_end <= $${valParams.length}`;
+      }
+      valQuery += " ORDER BY period_start DESC, computed_at DESC";
+
+      const valResult = await pool.query(valQuery, valParams);
+
+      res.json({
+        definitions: defs,
+        values: valResult.rows.map(row => ({
+          ...row,
+          kpiId: row.kpi_id,
+          schoolId: row.school_id,
+          periodStart: row.period_start,
+          periodEnd: row.period_end,
+          computedAt: row.computed_at,
+          calcRunId: row.calc_run_id
+        })),
+        goals: goals
+      });
+    } catch (error) {
+      console.error("Error fetching school KPIs:", error);
+      res.status(500).json({ message: "Failed to fetch school KPIs" });
+    }
+  });
 
   app.get("/api/kpis/:kpiId/values", requireAuth, async (req, res) => {
     try {
@@ -2614,14 +2655,14 @@ export async function registerRoutes(
           computed_at: string;
         }>(
           `SELECT DISTINCT ON (kd.key)
-             kv.kpi_definition_id AS kpi_id,
+             kv.kpi_id,
              kd.key,
              kd.name,
              kv.value::text,
              kv.metadata,
              kv.computed_at
            FROM kpi_values kv
-           JOIN kpi_definitions kd ON kd.id = kv.kpi_definition_id
+           JOIN kpi_definitions kd ON kd.id = kv.kpi_id
            WHERE kd.key = ANY($1::text[])
              ${dateFilter}
              ${schoolFilter}
@@ -2945,19 +2986,19 @@ export async function registerRoutes(
       }
 
       const params: unknown[] = [];
-      const conditions: string[] = [];
+      const conditions: string[] = ["e.enrollment_status = 'cancelled'"];
 
       if (period_start) {
         params.push(period_start as string);
-        conditions.push(`ce.detected_at >= $${params.length}::timestamptz`);
+        conditions.push(`e.cancelled_at >= $${params.length}::timestamptz`);
       }
       if (period_end) {
         params.push(period_end as string);
-        conditions.push(`ce.detected_at < ($${params.length}::timestamptz + interval '1 day')`);
+        conditions.push(`e.cancelled_at < ($${params.length}::timestamptz + interval '1 day')`);
       }
       if (effectiveSchoolId) {
         params.push(effectiveSchoolId);
-        conditions.push(`ce.school_id = $${params.length}::uuid`);
+        conditions.push(`e.school_id = $${params.length}::uuid`);
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -2970,15 +3011,15 @@ export async function registerRoutes(
         count: string;
       }>(
         `SELECT
-           ce.motive_id,
+           e.churn_motive_id as motive_id,
            cm.code,
            cm.label,
            cm.is_critical,
            COUNT(*)::text AS count
-         FROM public.churn_events ce
-         LEFT JOIN public.churn_motives cm ON cm.id = ce.motive_id
+         FROM public.enrollments e
+         LEFT JOIN public.churn_motives cm ON cm.id = e.churn_motive_id
          ${where}
-         GROUP BY ce.motive_id, cm.code, cm.label, cm.is_critical
+         GROUP BY e.churn_motive_id, cm.code, cm.label, cm.is_critical
          ORDER BY COUNT(*) DESC`,
         params
       );

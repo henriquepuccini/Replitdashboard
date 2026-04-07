@@ -43,7 +43,8 @@ export interface GoogleSheetsConfig {
     range: string;
     firstRowIsHeader?: boolean;
     sourceIdField?: string;
-    oauth: GoogleSheetsOAuthConfig;
+    apiKey?: string; // Optional API key for public sheets
+    oauth?: GoogleSheetsOAuthConfig;
 }
 
 // ─── Token Management ─────────────────────────────────────────────────────────
@@ -122,20 +123,33 @@ async function ensureValidToken(
  *   - ISO 8601 date string             → kept as string (transforms handle casting)
  *   - Everything else                  → trimmed string
  */
-function normalizeCell(raw: string): unknown {
-    const trimmed = raw.trim();
+function normalizeCell(raw: any): unknown {
+    if (raw === null || raw === undefined) return null;
 
+    if (typeof raw === "number") return raw;
+    if (typeof raw === "boolean") return raw;
+
+    if (typeof raw !== "string") return raw;
+
+    const trimmed = raw.trim();
     if (trimmed === "") return null;
 
-    // Integer
-    if (/^-?\d+$/.test(trimmed)) {
-        const n = parseInt(trimmed, 10);
-        if (!isNaN(n)) return n;
+    // Handle R$ or other currency symbols, spaces, then numbers with dots/commas
+    let normalizedNum = trimmed;
+    const currencyMatch = /^R\$\s*(-?[\d\.]+,\d+)$/.exec(trimmed);
+    if (currencyMatch) {
+       normalizedNum = currencyMatch[1];
+    } else if (/^-?[\d\.]+,[\d]+$/.test(trimmed)) {
+       normalizedNum = trimmed;
     }
 
-    // Float
-    if (/^-?\d+\.\d+$/.test(trimmed)) {
-        const n = parseFloat(trimmed);
+    if (/^-?[\d\.]+,[\d]+$/.test(normalizedNum)) {
+        normalizedNum = normalizedNum.replace(/\./g, "").replace(",", ".");
+    }
+
+    // Number check
+    if (/^-?\d+(\.\d+)?$/.test(normalizedNum)) {
+        const n = parseFloat(normalizedNum);
         if (!isNaN(n)) return n;
     }
 
@@ -150,7 +164,7 @@ function normalizeCell(raw: string): unknown {
  * header names.  Missing trailing cells in a row are filled with null.
  */
 function parseSheetValues(
-    values: string[][],
+    values: any[][],
     firstRowIsHeader: boolean
 ): Record<string, unknown>[] {
     if (!values || values.length === 0) return [];
@@ -159,9 +173,11 @@ function parseSheetValues(
     let dataRows: string[][];
 
     if (firstRowIsHeader) {
-        headers = values[0].map((h, i) =>
-            h && h.trim() !== "" ? h.trim() : `col_${i}`
-        );
+        headers = values[0].map((h, i) => {
+            if (h === null || h === undefined) return `col_${i}`;
+            const strH = String(h).trim();
+            return strH !== "" ? strH : `col_${i}`;
+        });
         dataRows = values.slice(1);
     } else {
         const maxCols = Math.max(...values.map((r) => r.length));
@@ -209,23 +225,31 @@ export async function fetchGoogleSheetData(
             `[google-sheets] Connector ${connector.id} missing config.range`
         );
     }
-    if (!config.oauth?.clientId || !config.oauth?.clientSecret || !config.oauth?.refreshToken) {
+    if (!config.apiKey && (!config.oauth?.clientId || !config.oauth?.clientSecret || !config.oauth?.refreshToken)) {
         throw new Error(
-            `[google-sheets] Connector ${connector.id} missing OAuth credentials (clientId, clientSecret, refreshToken)`
+            `[google-sheets] Connector ${connector.id} missing authentication. ` +
+            `Provide either an API Key (for public sheets) or OAuth credentials.`
         );
     }
 
-    // ── Refresh token if necessary ─────────────────────────────────────────────
-    const accessToken = await ensureValidToken(connector, config.oauth);
+    let authObj: any;
 
-    // ── Instantiate Sheets client ──────────────────────────────────────────────
-    const oauthClient = new google.auth.OAuth2(
-        config.oauth.clientId,
-        config.oauth.clientSecret
-    );
-    oauthClient.setCredentials({ access_token: accessToken });
+    if (config.apiKey) {
+        authObj = config.apiKey;
+    } else if (config.oauth) {
+        // ── Refresh token if necessary ─────────────────────────────────────────────
+        const accessToken = await ensureValidToken(connector, config.oauth);
 
-    const sheets = google.sheets({ version: "v4", auth: oauthClient });
+        // ── Instantiate OAuth client ──────────────────────────────────────────────
+        const oauthClient = new google.auth.OAuth2(
+            config.oauth.clientId,
+            config.oauth.clientSecret
+        );
+        oauthClient.setCredentials({ access_token: accessToken });
+        authObj = oauthClient;
+    }
+
+    const sheets = google.sheets({ version: "v4", auth: authObj });
 
     // ── Build A1 range notation: "SheetName!A1:Z1000" ─────────────────────────
     const a1Range = `${config.sheetName}!${config.range}`;
@@ -234,7 +258,7 @@ export async function fetchGoogleSheetData(
         `[google-sheets] Fetching connector ${connector.id}: ${config.spreadsheetId} / ${a1Range}`
     );
 
-    let rawValues: string[][];
+    let rawValues: any[][];
     try {
         const response = await sheets.spreadsheets.values.get({
             spreadsheetId: config.spreadsheetId,
@@ -243,7 +267,7 @@ export async function fetchGoogleSheetData(
             dateTimeRenderOption: "FORMATTED_STRING", // dates as readable strings
         });
 
-        rawValues = (response.data.values ?? []) as string[][];
+        rawValues = (response.data.values ?? []) as any[][];
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(
