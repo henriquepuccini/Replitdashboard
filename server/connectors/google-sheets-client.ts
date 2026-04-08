@@ -134,22 +134,33 @@ function normalizeCell(raw: any): unknown {
     const trimmed = raw.trim();
     if (trimmed === "") return null;
 
-    // Handle R$ or other currency symbols, spaces, then numbers with dots/commas
-    let normalizedNum = trimmed;
-    const currencyMatch = /^R\$\s*(-?[\d\.]+,\d+)$/.exec(trimmed);
-    if (currencyMatch) {
-       normalizedNum = currencyMatch[1];
-    } else if (/^-?[\d\.]+,[\d]+$/.test(trimmed)) {
-       normalizedNum = trimmed;
+    // Handle Brazilian currency formatting: R$ 1.348,00 or R$ 1.500
+    // Strategy: strip R$ and spaces. Then identify the decimal separator.
+    let stripped = trimmed.replace(/^R\$\s*/, '').trim();
+
+    // If matches a typical brazilian number format with thousands dot and decimal comma: 1.348,50 -> 1348.50
+    // or just thousands dot: 1.348 -> 1348
+    if (/^-?[\d\.,]+$/.test(stripped)) {
+        // Find if there is a comma. If so, it's the decimal.
+        if (stripped.includes(',')) {
+            stripped = stripped.replace(/\./g, '').replace(',', '.');
+        } else {
+            // No comma. Check if there's a dot. Could it be a thousands separator or decimal?
+            // "1.348" is usually 1348. "1.34" is usually 1.34. 
+            // In Brazil, dot is almost always thousands. We will strip it if it has exactly 3 digits after it, 
+            // but just to be safe, if we strip all dots, "1.500" becomes "1500".
+            // If it's a genuine english decimal like "1500.50", we'll miss it if we blindly strip dots.
+            // Let's assume if it has ONLY dots and exactly 3 digits at the end, it's thousands.
+            // Actually, best is: remove all dots!
+            const parts = stripped.split('.');
+            if (parts.length > 1 && parts[parts.length - 1].length === 3) {
+                 stripped = stripped.replace(/\./g, '');
+            }
+        }
     }
 
-    if (/^-?[\d\.]+,[\d]+$/.test(normalizedNum)) {
-        normalizedNum = normalizedNum.replace(/\./g, "").replace(",", ".");
-    }
-
-    // Number check
-    if (/^-?\d+(\.\d+)?$/.test(normalizedNum)) {
-        const n = parseFloat(normalizedNum);
+    if (/^-?\d+(\.\d+)?$/.test(stripped)) {
+        const n = parseFloat(stripped);
         if (!isNaN(n)) return n;
     }
 
