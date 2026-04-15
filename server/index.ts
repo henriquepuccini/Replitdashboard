@@ -199,6 +199,25 @@ app.use((req, res, next) => {
         }
       }
       log("Automatic connector sync completed", "scheduler");
+
+      try {
+        log("Triggering automatic KPI recomputation for current month...", "scheduler");
+        const { computeKpiForAllSchools } = await import("./kpis/compute");
+        const defs = await storage.getKpiDefinitions(true); // only active ones
+        const now = new Date();
+        const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+        const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+        
+        // Using Promise.all with concurrency control would be better, but loop is safe.
+        for (const def of defs) {
+           await computeKpiForAllSchools(def.id, periodStart, periodEnd, null, undefined, 2).catch(err => {
+             console.error(`Error computing KPI ${def.key}:`, err);
+           });
+        }
+        log("Automatic KPI recomputation completed", "scheduler");
+      } catch (err) {
+         console.error("Failed to recompute KPIs after sync:", err);
+      }
     } catch (err) {
       console.error("Failed during automated connector sync schedule:", err);
     }

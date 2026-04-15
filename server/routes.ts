@@ -1904,11 +1904,11 @@ export async function registerRoutes(
       let query = "SELECT * FROM school_aggregates WHERE school_id = $1";
       if (from) {
         params.push(from);
-        query += ` AND date >= $${params.length}`;
+        query += ` AND DATE(date) >= $${params.length}`;
       }
       if (to) {
         params.push(to);
-        query += ` AND date <= $${params.length}`;
+        query += ` AND DATE(date) <= $${params.length}`;
       }
       query += " ORDER BY date DESC";
 
@@ -1940,11 +1940,11 @@ export async function registerRoutes(
       let valQuery = "SELECT * FROM kpi_values WHERE (school_id = $1 OR school_id IS NULL)";
       if (from) {
         valParams.push(from);
-        valQuery += ` AND period_start >= $${valParams.length}`;
+        valQuery += ` AND DATE(period_start) >= $${valParams.length}`;
       }
       if (to) {
         valParams.push(to);
-        valQuery += ` AND period_end <= $${valParams.length}`;
+        valQuery += ` AND DATE(period_end) <= $${valParams.length}`;
       }
       valQuery += " ORDER BY period_start DESC, computed_at DESC";
 
